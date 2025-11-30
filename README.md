@@ -52,7 +52,10 @@ Already have a project venv or `uv` workspace? Install directly:
 uv add "seymourlib[serial]"
 ```
 
-> 💡 `uv add` understands optional extras and lockfiles, so you get fast installs even outside this repo.
+This will update your project's dependencies, install the latest source distribution of `seymourlib`, and update whatever lockfiles your project may use.
+
+> 💡 The optional `serial` extra pulls in `pyserial-asyncio` so the same client works over USB/RS232 without the IP bridge.  If you want to trim
+your project's dependency graph and **never** plan to talk over direct RS232, you can skip it.
 
 ### Classic pip fallback
 
@@ -61,9 +64,6 @@ python -m venv .venv
 . .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install "seymourlib[serial]"
 ```
-
-> 💡 The optional `serial` extra pulls in `pyserial-asyncio` so the same client works over USB/RS232 without the IP bridge.  If you want to trim
-your project's dependencies and **never** plan to talk over direct RS232, you can skip it.
 
 ---
 
