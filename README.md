@@ -163,7 +163,7 @@ uv run seymourctl --help
 ## Contributing
 
 - Fork, create a feature branch, and open a PR (tests + type checks 🚦 required).
-- Run `pre-commit` before pushing.
+- `pre-commit run` before pushing.
 - Issues and hardware findings are welcome - real-world serial logs are gold for regression tests.
 
 Need something else? Open a discussion or ping via Issues and we’ll figure it out together. 🙌

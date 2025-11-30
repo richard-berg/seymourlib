@@ -127,7 +127,11 @@ class TestSeymourTransportBase:
         transport.writer.write.side_effect = write_side_effect
 
         # Create multiple concurrent send operations
-        tasks = [transport.send(b"[frame1]"), transport.send(b"[frame2]"), transport.send(b"[frame3]")]
+        tasks = [
+            transport.send(b"[frame1]"),
+            transport.send(b"[frame2]"),
+            transport.send(b"[frame3]"),
+        ]
 
         await asyncio.gather(*tasks)
 
@@ -291,7 +295,9 @@ class TestSerialTransport:
         mock_writer = AsyncMock(spec=asyncio.StreamWriter)
 
         mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        mock_serial_asyncio.open_serial_connection = AsyncMock(
+            return_value=(mock_reader, mock_writer)
+        )
 
         with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
             await transport.connect()
@@ -325,7 +331,9 @@ class TestSerialTransport:
         transport = SerialTransport("/dev/ttyUSB0")
 
         mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(side_effect=Exception("Serial port error"))
+        mock_serial_asyncio.open_serial_connection = AsyncMock(
+            side_effect=Exception("Serial port error")
+        )
 
         with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
             # The open_serial_connection exception is not wrapped, so it propagates directly
@@ -348,7 +356,9 @@ class TestSerialTransport:
         mock_reader.readuntil.return_value = b"[serial_response]"
 
         mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(return_value=(mock_reader, mock_writer))
+        mock_serial_asyncio.open_serial_connection = AsyncMock(
+            return_value=(mock_reader, mock_writer)
+        )
 
         with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
             # Connect

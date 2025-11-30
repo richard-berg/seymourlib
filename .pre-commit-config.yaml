@@ -3,7 +3,7 @@ repos:
   # Ruff (format + lint)
   # --------------------------------------------------------------------------
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.6.8
+    rev: v0.14.7
     hooks:
       - id: ruff
         name: ruff (lint)
@@ -15,11 +15,13 @@ repos:
   # Mypy
   # --------------------------------------------------------------------------
   - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.11.2
+    rev: v1.19.0
     hooks:
       - id: mypy
         additional_dependencies:
           - types-setuptools
+          - attrs
+          - pytest-asyncio
         args:
           - --config-file=pyproject.toml
 
@@ -27,7 +29,7 @@ repos:
   # Basic hygiene
   # --------------------------------------------------------------------------
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: v6.0.0
     hooks:
       - id: check-yaml
       - id: check-toml

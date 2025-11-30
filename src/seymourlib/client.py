@@ -141,7 +141,9 @@ class SeymourClient:
         return {
             "last_successful_operation": self._last_successful_operation,
             "time_since_last_success": (
-                time.time() - self._last_successful_operation if self._last_successful_operation > 0 else -1
+                time.time() - self._last_successful_operation
+                if self._last_successful_operation > 0
+                else -1
             ),
         }
 
@@ -164,7 +166,9 @@ class SeymourClient:
         retryer = AsyncRetrying(
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=10),
-            retry=retry_if_exception_type((SeymourTransportError, TimeoutError, ConnectionError, OSError)),
+            retry=retry_if_exception_type(
+                (SeymourTransportError, TimeoutError, ConnectionError, OSError)
+            ),
             before_sleep=before_sleep_log(_LOGGER, logging.WARNING),
         )
 
@@ -196,7 +200,7 @@ class SeymourClient:
         except Exception as exc:
             # Mark disconnected for any transport error
             self._connected = False
-            if isinstance(exc, (SeymourTransportError, TimeoutError, ConnectionError, OSError)):
+            if isinstance(exc, SeymourTransportError | TimeoutError | ConnectionError | OSError):
                 raise SeymourConnectionError("Transport operation failed after retries") from exc
             else:
                 raise SeymourProtocolError("Protocol or unexpected error") from exc

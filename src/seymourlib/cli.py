@@ -138,7 +138,9 @@ def _parse_increment(move: bool, jog: bool, until_limit: bool) -> MovementCode:
         case (False, False, True):
             return MovementCode.UNTIL_LIMIT
         case _:
-            raise typer.BadParameter("Exactly one of --move, --jog, or --until-limit must be specified.")
+            raise typer.BadParameter(
+                "Exactly one of --move, --jog, or --until-limit must be specified."
+            )
 
 
 @positions_app.async_command("in")  # type: ignore
@@ -200,7 +202,8 @@ async def preset_list() -> None:
 @preset_app.async_command("reset")  # type: ignore
 async def preset_reset(
     ratio_id: Annotated[
-        str | None, typer.Argument(help="3-digit ratio ID, e.g. '235' for 2.35:1.  Default: ALL PRESETS")
+        str | None,
+        typer.Argument(help="3-digit ratio ID, e.g. '235' for 2.35:1.  Default: ALL PRESETS"),
     ] = None,
 ) -> None:
     """Restore the given ratio preset(s) to their factory default."""

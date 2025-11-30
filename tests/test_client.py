@@ -137,7 +137,9 @@ class TestSeymourClientConnection:
         transport.connect_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_connect_already_connected(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_connect_already_connected(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test connection when already connected."""
         await client.connect()  # First connection
         transport.connect_mock.reset_mock()
@@ -148,7 +150,9 @@ class TestSeymourClientConnection:
         transport.connect_mock.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_connect_transport_error(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_connect_transport_error(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test connection failure due to transport error."""
         transport.connect_mock.side_effect = SeymourTransportError("Connection failed")
 
@@ -158,7 +162,9 @@ class TestSeymourClientConnection:
         assert not client.is_connected
 
     @pytest.mark.asyncio
-    async def test_connect_with_retries(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_connect_with_retries(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test connection retries on failure."""
         # Fail twice, then succeed
         transport.connect_mock.side_effect = [
@@ -184,7 +190,9 @@ class TestSeymourClientConnection:
         transport.close_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_close_not_connected(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_close_not_connected(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test close when not connected."""
         assert not client.is_connected
 
@@ -229,7 +237,9 @@ class TestSeymourClientContextManager:
         return SeymourClient(transport)
 
     @pytest.mark.asyncio
-    async def test_context_manager_success(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_context_manager_success(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test successful context manager usage."""
         async with client as ctx_client:
             assert ctx_client is client
@@ -240,7 +250,9 @@ class TestSeymourClientContextManager:
         transport.close_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_context_manager_exception(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_context_manager_exception(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test context manager cleanup after exception."""
         with pytest.raises(ValueError):
             async with client:
@@ -348,7 +360,9 @@ class TestSeymourClientOperations:
         return SeymourClient(transport, max_retries=2, request_timeout=1.0)
 
     @pytest.mark.asyncio
-    async def test_execute_operation_success(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_execute_operation_success(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test successful operation execution."""
         transport.receive_mock.return_value = b"[test_response]"
 
@@ -360,7 +374,9 @@ class TestSeymourClientOperations:
         transport.receive_mock.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_execute_operation_send_only(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_execute_operation_send_only(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test operation execution without receiving response."""
         await client.connect()
         result = await client._execute_operation(b"[test_frame]", receive=False)
@@ -400,7 +416,9 @@ class TestSeymourClientOperations:
         assert transport.send_mock.call_count == 2
 
     @pytest.mark.asyncio
-    async def test_execute_operation_timeout(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_execute_operation_timeout(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test operation timeout handling."""
 
         async def slow_send(data: bytes) -> None:
@@ -464,7 +482,6 @@ class TestSeymourClientPublicAPI:
             patch("seymourlib.protocol.encode_status") as mock_encode,
             patch("seymourlib.protocol.decode_status") as mock_decode,
         ):
-
             mock_encode.return_value = b"[S]"
             mock_decode.return_value = protocol.MaskStatus(
                 code=protocol.StatusCode.STOPPED_AT_RATIO, ratio=protocol.Ratio("123")
@@ -485,7 +502,6 @@ class TestSeymourClientPublicAPI:
             patch("seymourlib.protocol.encode_positions") as mock_encode,
             patch("seymourlib.protocol.decode_positions") as mock_decode,
         ):
-
             mock_encode.return_value = b"[P]"
             mock_decode.return_value = [
                 protocol.MaskPosition(motor_id=protocol.MotorID.TOP, position_pct=50.0)
@@ -507,7 +523,6 @@ class TestSeymourClientPublicAPI:
             patch("seymourlib.protocol.encode_read_sysinfo") as mock_encode,
             patch("seymourlib.protocol.decode_system_info") as mock_decode,
         ):
-
             mock_encode.return_value = b"[Y]"
             mock_info = protocol.SystemInfo(
                 screen_model="TEST",
@@ -527,13 +542,14 @@ class TestSeymourClientPublicAPI:
             mock_decode.assert_called_once_with(b"[Y...]")
 
     @pytest.mark.asyncio
-    async def test_get_ratio_settings(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_get_ratio_settings(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test get_ratio_settings method."""
         with (
             patch("seymourlib.protocol.encode_read_settings") as mock_encode,
             patch("seymourlib.protocol.decode_settings") as mock_decode,
         ):
-
             mock_encode.return_value = b"[R]"
             mock_decode.return_value = [
                 protocol.RatioSetting(
@@ -726,7 +742,9 @@ class TestSeymourClientHealthCheckIntegration:
         """Test timeout is restored even if health check fails."""
         original_timeout = client.request_timeout
 
-        with patch.object(client, "get_status", side_effect=SeymourTransportError("Health check failed")):
+        with patch.object(
+            client, "get_status", side_effect=SeymourTransportError("Health check failed")
+        ):
             await client.connect()
 
             with pytest.raises(SeymourTransportError):
@@ -764,7 +782,9 @@ class TestSeymourClientEdgeCases:
             await client._execute_operation(b"[frame]")
 
     @pytest.mark.asyncio
-    async def test_concurrent_operations(self, client: SeymourClient, transport: MockTransport) -> None:
+    async def test_concurrent_operations(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
         """Test concurrent operations don't interfere with each other."""
         transport.receive_mock.side_effect = [b"[response1]", b"[response2]"]
         await client.connect()
