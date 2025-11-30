@@ -443,6 +443,11 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+serial = [
+    { name = "pyserial-asyncio" },
+]
+
+[package.dev-dependencies]
 dev = [
     { name = "coverage" },
     { name = "mypy" },
@@ -456,9 +461,6 @@ dev = [
 lint = [
     { name = "ruff" },
 ]
-serial = [
-    { name = "pyserial-asyncio" },
-]
 test = [
     { name = "coverage" },
     { name = "pyserial-asyncio" },
@@ -468,6 +470,7 @@ test = [
 ]
 typecheck = [
     { name = "mypy" },
+    { name = "types-setuptools" },
 ]
 
 [package.metadata]
@@ -475,25 +478,34 @@ requires-dist = [
     { name = "anyio", specifier = ">=3.4" },
     { name = "async-typer", specifier = ">=0.1.10" },
     { name = "attrs", specifier = ">=25.4.0" },
-    { name = "coverage", marker = "extra == 'dev'", specifier = ">=7" },
-    { name = "coverage", marker = "extra == 'test'", specifier = ">=7" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
-    { name = "mypy", marker = "extra == 'typecheck'", specifier = ">=1.10" },
-    { name = "pyserial-asyncio", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "pyserial-asyncio", marker = "extra == 'serial'", specifier = ">=0.6" },
-    { name = "pyserial-asyncio", marker = "extra == 'test'", specifier = ">=0.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7" },
-    { name = "pytest", marker = "extra == 'test'", specifier = ">=7" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.23" },
-    { name = "pytest-timeout", marker = "extra == 'dev'", specifier = ">=2" },
-    { name = "pytest-timeout", marker = "extra == 'test'", specifier = ">=2" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "ruff", marker = "extra == 'lint'", specifier = ">=0.6" },
     { name = "tenacity", specifier = ">=8.0" },
-    { name = "types-setuptools", marker = "extra == 'dev'" },
 ]
-provides-extras = ["serial", "dev", "lint", "typecheck", "test"]
+provides-extras = ["serial"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "coverage", specifier = ">=7" },
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "pyserial-asyncio", specifier = ">=0.6" },
+    { name = "pytest", specifier = ">=7" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-timeout", specifier = ">=2" },
+    { name = "ruff", specifier = ">=0.6" },
+    { name = "types-setuptools" },
+]
+lint = [{ name = "ruff", specifier = ">=0.6" }]
+test = [
+    { name = "coverage", specifier = ">=7" },
+    { name = "pyserial-asyncio", specifier = ">=0.6" },
+    { name = "pytest", specifier = ">=7" },
+    { name = "pytest-asyncio", specifier = ">=0.23" },
+    { name = "pytest-timeout", specifier = ">=2" },
+]
+typecheck = [
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "types-setuptools" },
+]
 
 [[package]]
 name = "shellingham"
