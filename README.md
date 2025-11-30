@@ -25,6 +25,7 @@ flowchart LR
      Client --> Transport
      Transport -->|TCP 4999| IP2SL[Global Caché IP2SL]
      Transport -->|RS232| Screen[Seymour Masking Screen]
+     IP2SL -->|RS232| Screen
 ```
 
 ## Installation
