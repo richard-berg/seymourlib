@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  tests:
+    name: Tests / Lint / Typecheck
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Sync project (all extras)
+        run: uv sync --all-extras
+
+      # ---- Lint -------------------------------------------------------------
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check .
+
+      # ---- Typecheck --------------------------------------------------------
+      - name: Mypy
+        run: uv run mypy src
+
+      # ---- Tests ------------------------------------------------------------
+      - name: Run tests
+        run: uv run pytest -q --disable-warnings
