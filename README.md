@@ -33,34 +33,51 @@ flowchart TB
 ### Requirements
 
 - Python 3.11+
-- `uv` >= 0.2 (recommended) or classic `pip`
+- `uv` >= 0.9 (preferred) or classic `pip`
 
-### Using uv (dev + extras)
+### Quick install (recommended)
 
 ```bash
-uv sync --all-extras
+uv tool install --python 3.11 "seymourlib[serial]"
 ```
 
-### Using pip (runtime only)
+- This pulls the published wheel straight from [PyPI](https://pypi.org/project/seymourlib/) and drops a `seymourctl` executable anywhere on your `PATH`.
+- Use `seymourctl --help` to confirm things are wired up, then jump straight to the CLI examples below.
+
+### Existing virtual environments
+
+Already have a project venv or `uv` workspace? Install directly:
+
+```bash
+uv add "seymourlib[serial]"
+```
+
+> 💡 `uv add` understands optional extras and lockfiles, so you get fast installs even outside this repo.
+
+### Classic pip fallback
 
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # or .venv\Scripts\activate on Windows
+. .venv/bin/activate  # or .venv\Scripts\activate on Windows
 pip install "seymourlib[serial]"
 ```
 
-> 💡 The optional `serial` extra pulls in `pyserial-asyncio` so the same client works over USB/RS232 without the IP bridge.
+> 💡 The optional `serial` extra pulls in `pyserial-asyncio` so the same client works over USB/RS232 without the IP bridge.  If you want to trim
+your project's dependencies and **never** plan to talk over direct RS232, you can skip it.
 
 ---
 
-## First-Time Setup Checklist
+## Local Development
+
+To debug, contribute code, or run the full test suite:
 
 1. **Clone & bootstrap**
-    - `git clone https://github.com/richard-berg/seymourlib && cd seymourlib`
+    - `git clone https://github.com/richard-berg/seymourlib.git`
+    - `cd seymourlib`
     - `uv sync --all-extras`
 2. **Sanity-test the library**
     - `uv run pytest` for local regression.
-    - `uv run seymourctl -v status` to hit your target once hardware is reachable.
+    - `SEYMOUR_HOST=<HOSTNAME> uv run seymourctl -v status` to hit your target once hardware is reachable.
 3. **Wire up hardware**
     - Confirm straight-through RS232 between IP2SL and the Seymour control port.
     - For direct USB serial, a FTDI-based adapter keeps timing stable.
@@ -90,9 +107,9 @@ asyncio.run(main())
 ### CLI
 
 ```bash
-uv run seymourctl --host 192.168.1.70 status
-uv run seymourctl --host 192.168.1.70 preset apply 235
-uv run seymourctl --help
+seymourctl --host 192.168.1.70 status
+seymourctl --host 192.168.1.70 preset apply 235
+seymourctl --help
 ```
 
 ---
