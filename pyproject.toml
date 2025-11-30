@@ -5,9 +5,19 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "seymourlib"
 version = "0.1.0"
-description = "Async Python client for Seymour masking screens (direct serial or IP2SL)"
+description = "Python client for Seymour masking screens, connected via direct serial or Global Caché iTach IP2SL"
+keywords = ["seymour", "masking", "screen", "serial", "itach", "ip2sl", "home-assistant"]
 authors = [{name = "Richard Berg", email = "ars@richardberg.net"}]
-license = {text = "MIT"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Home Automation",
+]
+license = "MIT"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -16,6 +26,12 @@ dependencies = [
     "tenacity>=8.0",
     "async-typer>=0.1.10",
 ]
+
+[project.urls]
+omepage = "https://github.com/richard-berg/seymourlib"
+source = "https://github.com/richard-berg/seymourlib.git"
+issues = "https://github.com/richard-berg/seymourlib/issues"
+
 
 [project.optional-dependencies]
 serial = [
