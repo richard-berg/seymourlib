@@ -19,7 +19,7 @@ Python client for Seymour masking screens, connected via direct serial or Global
 ## Architecture at a Glance
 
 ```mermaid
-flowchart LR
+flowchart TB
      App[Your automation / HA stack] -->|async API| Client[SeymourClient]
      Client --> Protocol[Protocol helpers]
      Client --> Transport
