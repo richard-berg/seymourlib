@@ -58,6 +58,7 @@ dev = [
     { include-group = "lint" },
     { include-group = "test" },
     { include-group = "typecheck" },
+    "ipython>=7",
 ]
 
 [tool.uv]
