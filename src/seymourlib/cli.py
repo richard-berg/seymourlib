@@ -1,6 +1,8 @@
 """Simple CLI utility to exercise the client."""
 
+import asyncio
 import logging
+import time
 from typing import Annotated
 
 import attrs
@@ -8,12 +10,19 @@ import typer
 from async_typer import AsyncTyper
 from rich import print as rprint
 
-from seymourlib.protocol import DiagnosticOption, MotorID, MovementCode, Ratio
+from seymourlib.protocol import DiagnosticOption, MotorID, MovementCode, Ratio, StatusCode
 
 from .client import SeymourClient
 from .transport import SeymourTransport
 
 app = AsyncTyper(help="Seymour controller CLI")
+
+STATUS_POLL_INTERVAL = 0.5
+STATUS_WAIT_TIMEOUT = 60.0
+_MOVEMENT_COMPLETE_CODES: tuple[StatusCode, ...] = (
+    StatusCode.HALTED,
+    StatusCode.STOPPED_AT_RATIO,
+)
 
 
 @attrs.frozen
@@ -87,6 +96,38 @@ def _get_client() -> SeymourClient:
     return SeymourClient(transport)
 
 
+async def _wait_for_completion(
+    client: SeymourClient,
+    desired_codes: tuple[StatusCode, ...] = _MOVEMENT_COMPLETE_CODES,
+    poll_interval: float = STATUS_POLL_INTERVAL,
+    status_timeout: float = STATUS_WAIT_TIMEOUT,
+) -> None:
+    """Poll controller status until it reports one of the desired codes."""
+    desired_labels = ", ".join(code.name for code in desired_codes)
+    start = time.monotonic()
+
+    # Initial delay before first poll - can take awhile for controller to report that motors are moving
+    await asyncio.sleep(poll_interval * 4)
+
+    while True:
+        status = await client.get_status()
+        last_status = status.code
+        if last_status in desired_codes:
+            assert _GLOBAL_OPTIONS is not None
+            if _GLOBAL_OPTIONS.verbose:
+                rprint(f"[green]Controller status:[/green] {last_status.name}")
+            return
+
+        if time.monotonic() - start >= status_timeout:
+            typer.secho(
+                f"Timed out waiting for status {desired_labels}; last status was {last_status.name if last_status else 'unknown'}",
+                fg="red",
+            )
+            raise typer.Exit(code=1)
+
+        await asyncio.sleep(poll_interval)
+
+
 @app.async_command()  # type: ignore
 async def status() -> None:
     """Show the current status code."""
@@ -100,6 +141,7 @@ async def calibrate(motor: Annotated[MotorID, typer.Argument()] = MotorID.ALL) -
     """Calibrate the given motor(s) by moving all the way in & out."""
     async with _get_client() as client:
         await client.calibrate(motor)
+        await _wait_for_completion(client)
 
 
 positions_app = AsyncTyper(help="Commands for the motors' absolute positions.")
@@ -120,6 +162,7 @@ async def positions_halt(motor: Annotated[MotorID, typer.Argument()] = MotorID.A
     """Stop the specified motor(s) at their current position."""
     async with _get_client() as client:
         await client.halt(motor)
+        await _wait_for_completion(client)
 
 
 @positions_app.async_command("home")  # type: ignore
@@ -127,6 +170,7 @@ async def positions_home(motor: Annotated[MotorID, typer.Argument()] = MotorID.A
     """Move the specified motor(s) to their home position."""
     async with _get_client() as client:
         await client.home(motor)
+        await _wait_for_completion(client)
 
 
 def _parse_increment(move: bool, jog: bool, until_limit: bool) -> MovementCode:
@@ -154,6 +198,7 @@ async def positions_in(
     increment = _parse_increment(move, jog, until_limit)
     async with _get_client() as client:
         await client.move_in(motor, increment)
+        await _wait_for_completion(client)
 
 
 @positions_app.async_command("out")  # type: ignore
@@ -167,6 +212,7 @@ async def positions_out(
     increment = _parse_increment(move, jog, until_limit)
     async with _get_client() as client:
         await client.move_out(motor, increment)
+        await _wait_for_completion(client)
 
 
 preset_app = AsyncTyper(help="Commands for motor presets.")
@@ -188,6 +234,7 @@ async def preset_apply(
     ratio = _parse_ratio_id(ratio_id)
     async with _get_client() as client:
         await client.move_to_ratio(ratio)
+        await _wait_for_completion(client)
 
 
 @preset_app.async_command("list")  # type: ignore
