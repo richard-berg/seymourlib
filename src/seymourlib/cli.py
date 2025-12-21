@@ -9,11 +9,20 @@ import attrs
 import typer
 from async_typer import AsyncTyper
 from rich import print as rprint
+from rich.table import Table
 
 from seymourlib.protocol import DiagnosticOption, MotorID, MovementCode, Ratio, StatusCode
 
 from .client import SeymourClient
-from .transport import SeymourTransport
+from .discovery import (
+    DEFAULT_DISCOVERY_INTERVAL,
+    DiscoveryError,
+    SerialTransportCandidate,
+    TCPTransportCandidate,
+    enumerate_serial_transports,
+    enumerate_tcp_transports,
+)
+from .transport import SEYMOUR_BAUD_RATE, SeymourTransport
 
 app = AsyncTyper(help="Seymour controller CLI")
 
@@ -134,6 +143,110 @@ async def status() -> None:
     async with _get_client() as client:
         status = await client.get_status()
         rprint(status)
+
+
+discover_app = AsyncTyper(help="Discover available Seymour transports.")
+app.add_typer(discover_app, name="discover")
+
+
+def _render_tcp_candidates(candidates: list[TCPTransportCandidate]) -> None:
+    """Display discovered TCP transports in a table."""
+
+    if not candidates:
+        typer.echo("No Global Caché IP2SL devices were discovered.")
+        return
+
+    table = Table(title="Discovered TCP transports")
+    table.add_column("Host", style="cyan")
+    table.add_column("Port", justify="right")
+    table.add_column("Model")
+    table.add_column("Status")
+    table.add_column("UUID")
+
+    for candidate in candidates:
+        metadata = candidate.metadata
+        table.add_row(
+            candidate.host,
+            str(candidate.port),
+            metadata.get("Model", metadata.get("Make", "")),
+            metadata.get("Status", ""),
+            metadata.get("UUID", ""),
+        )
+
+    rprint(table)
+
+
+def _render_serial_candidates(candidates: list[SerialTransportCandidate]) -> None:
+    """Display available serial transports in a table."""
+
+    if not candidates:
+        typer.echo("No serial ports were detected.")
+        return
+
+    table = Table(title="Available serial transports")
+    table.add_column("Device", style="cyan")
+    table.add_column("Baud", justify="right")
+    table.add_column("Description")
+    table.add_column("Hardware ID")
+
+    for candidate in candidates:
+        table.add_row(
+            candidate.device,
+            str(candidate.baudrate),
+            candidate.description or "-",
+            candidate.hardware_id or "-",
+        )
+
+    rprint(table)
+
+
+@discover_app.async_command("tcp")  # type: ignore
+async def discover_tcp(
+    interval: Annotated[
+        float,
+        typer.Option(
+            "--interval",
+            "-i",
+            help="Seconds to listen for Global Caché multicast beacons.",
+        ),
+    ] = DEFAULT_DISCOVERY_INTERVAL,
+) -> None:
+    """List TCP transports discovered on the local network."""
+
+    if interval <= 0:
+        raise typer.BadParameter("Interval value must be greater than zero.")
+    try:
+        candidates = await enumerate_tcp_transports(interval=interval)
+    except DiscoveryError as exc:
+        typer.secho(str(exc), fg="red")
+        raise typer.Exit(code=1) from exc
+
+    _render_tcp_candidates(candidates)
+
+
+@discover_app.async_command("serial")  # type: ignore
+async def discover_serial(
+    baudrate: Annotated[
+        int,
+        typer.Option(
+            "--baudrate",
+            "-b",
+            help="Baud rate to use when instantiating Serial transports.",
+        ),
+    ] = SEYMOUR_BAUD_RATE,
+) -> None:
+    """List Serial transports available on this machine."""
+
+    if baudrate <= 0:
+        raise typer.BadParameter("Baud rate must be greater than zero.")
+
+    try:
+        candidates = await enumerate_serial_transports(baudrate=baudrate)
+    except DiscoveryError as exc:
+        typer.secho(str(exc), fg="red")
+        raise typer.Exit(code=1) from exc
+
+    _render_serial_candidates(candidates)
 
 
 @app.async_command()  # type: ignore
