@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "seymourlib"
-version = "0.1.2"
+version = "0.1.3"
 description = "Python client for Seymour masking screens, connected via direct serial or Global Caché iTach IP2SL"
 keywords = ["seymour", "masking", "screen", "serial", "itach", "ip2sl", "home-assistant"]
 authors = [{name = "Richard Berg", email = "ars@richardberg.net"}]
