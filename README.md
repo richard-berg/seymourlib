@@ -14,6 +14,8 @@ Python client for Seymour masking screens, connected via direct serial or Global
 - Async-first client and transport abstractions (TCP/IP2SL vs native serial) with consistent APIs.
 - Protocol helpers that mirror the official Seymour RS232 spec, including parsing/validation utilities.
 - `seymourctl` CLI for one-off commands, scripting, and smoke tests in CI.
+- Zero-config Global Caché IP2SL and serial-port discovery via async helpers and CLI subcommands.
+- Movement/preset commands poll controller status and return only once the motors report HALTED/STOPPED, so scripts never race ahead.
 - Batteries-included retry logic (`tenacity`), timeout handling, and graceful cancellation via `anyio`.
 
 ## Architecture at a Glance
@@ -111,6 +113,44 @@ seymourctl --host 192.168.1.70 status
 seymourctl --host 192.168.1.70 preset apply 235
 seymourctl --help
 ```
+
+Motion-oriented commands such as `calibrate`, `positions in/out/home`, and `preset apply` block until the controller reports `HALTED` or `STOPPED_AT_RATIO`, keeping CI and automation flows deterministic without manual `sleep` calls.
+
+### Transport discovery (Python API)
+
+```python
+import asyncio
+from seymourlib.discovery import (
+    enumerate_serial_transports,
+    enumerate_tcp_transports,
+)
+
+
+async def main() -> None:
+    tcp_devices = await enumerate_tcp_transports()  # listens for Global Caché beacons
+    serial_ports = await enumerate_serial_transports()
+    print("TCP devices:")
+    for device in tcp_devices:
+        print(device.host, device.metadata.get("Model", ""))
+
+    print("Serial ports:")
+    for port in serial_ports:
+        print(port.device, port.description)
+
+
+asyncio.run(main())
+```
+
+`enumerate_tcp_transports()` joins the Global Caché multicast group and returns deduplicated IP2SL candidates (override `interval` to listen longer or `interface_ip` to bind a specific NIC). `enumerate_serial_transports()` surfaces every local serial adapter with the proper Seymour baud rate by default.
+
+### Transport discovery (CLI)
+
+```bash
+seymourctl discover tcp
+seymourctl discover serial
+```
+
+Use `discover tcp` when you need to confirm IP2SL devices are visible on the LAN; the table output includes the advertised model, status, and UUID from the Global Caché beacons. `discover serial` lists local USB/RS232 adapters with hardware IDs so you can select the right port before launching the client.
 
 ---
 
