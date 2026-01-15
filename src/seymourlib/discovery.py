@@ -122,7 +122,11 @@ async def enumerate_serial_transports(
         raise ValueError("baudrate must be positive")
 
     list_ports = _load_serial_list_ports()
-    ports = list_ports.comports()
+    loop = asyncio.get_running_loop()
+    ports = await loop.run_in_executor(
+        None,
+        list_ports.comports,
+    )
 
     candidates: list[SerialTransportCandidate] = []
     for port in ports:
