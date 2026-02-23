@@ -9,6 +9,8 @@ import re
 
 import attrs
 
+from .exceptions import SeymourProtocolError
+
 FRAME_START = b"["
 FRAME_END = b"]"
 PROTOCOL_VERSION = b"01"
@@ -127,7 +129,7 @@ class Serial:
         """
         match = Serial.PARSER_RE.fullmatch(serial_number)
         if not match:
-            raise ValueError(f"Malformed serial number: {serial_number!r}")
+            raise SeymourProtocolError(f"Malformed serial number: {serial_number!r}")
 
         model_code = match.group("model_code").decode("ascii")
         month = int(match.group("month"))
@@ -180,7 +182,9 @@ class RatioSetting:
 
         match = re.fullmatch(pattern, entry)
         if not match:
-            raise ValueError(f"Malformed ratio setting entry for pattern {pattern!r}: {entry!r}")
+            raise SeymourProtocolError(
+                f"Malformed ratio setting entry for pattern {pattern!r}: {entry!r}"
+            )
 
         ratio_id = match.group("Ratio").decode("ascii")
         label = match.group("label").decode("ascii").strip()
@@ -293,7 +297,7 @@ _STATUS_RE = _frame_re(StatusCode.regex() + Ratio.regex() + rb"?")
 def decode_status(raw: bytes) -> MaskStatus:
     match = _STATUS_RE.match(raw)
     if not match:
-        raise ValueError(f"Malformed status response: {raw!r}")
+        raise SeymourProtocolError(f"Malformed status response: {raw!r}")
     status_code = match.group("StatusCode").decode("ascii")
     maybe_ratio_str = match.group("Ratio")
     ratio = Ratio(maybe_ratio_str.decode("ascii")) if maybe_ratio_str is not None else None
@@ -307,16 +311,16 @@ _ASCII_PCT_RE = rb"([0-9.\-]{4})"
 def decode_positions(raw: bytes) -> list[MaskPosition]:
     match = _POSITIONS_RE.match(raw)
     if not match:
-        raise ValueError(f"Malformed positions response: {raw!r}")
+        raise SeymourProtocolError(f"Malformed positions response: {raw!r}")
     num_motors = int(match.group("num_motors"))
     entries_str = match.group("entries")
 
     pattern = b"".join(MotorID.regex(i) + _ASCII_PCT_RE for i in range(num_motors))
     match = re.fullmatch(pattern, entries_str)
     if not match:
-        raise ValueError(f"Malformed motor position entries: {entries_str!r}")
+        raise SeymourProtocolError(f"Malformed motor position entries: {entries_str!r}")
     if len(match.groups()) != num_motors * 2:
-        raise ValueError(f"Expected {num_motors} motor entries, got: {entries_str!r}")
+        raise SeymourProtocolError(f"Expected {num_motors} motor entries, got: {entries_str!r}")
     positions: list[MaskPosition] = []
     for i in range(num_motors):
         motor_id_str = match.group(1 + i * 2).decode("ascii")
@@ -338,7 +342,7 @@ _SYSTEM_INFO_RE = _frame_re(
 def decode_system_info(raw: bytes) -> SystemInfo:
     match = _SYSTEM_INFO_RE.match(raw)
     if not match:
-        raise ValueError(f"Malformed system info response: {raw!r}")
+        raise SeymourProtocolError(f"Malformed system info response: {raw!r}")
     model = match.group("model").decode("ascii").strip()
 
     width = float(match.group("width"))
@@ -365,14 +369,14 @@ _SETTINGS_RE = _frame_re(rb"(?P<num_motors>[0-9])(?P<num_ratios>[0-9]{2})(?P<ent
 def decode_settings(raw: bytes) -> list[RatioSetting]:
     match = _SETTINGS_RE.match(raw)
     if not match:
-        raise ValueError(f"Malformed settings response: {raw!r}")
+        raise SeymourProtocolError(f"Malformed settings response: {raw!r}")
     num_motors = int(match.group("num_motors"))
     num_ratios = int(match.group("num_ratios"))
     entries_str = match.group("entries")
 
     expected_length_per_entry = RatioSetting.expected_entry_length(num_motors)
     if len(entries_str) != expected_length_per_entry * num_ratios:
-        raise ValueError(
+        raise SeymourProtocolError(
             f"Expected {num_ratios} ratio entries of length {expected_length_per_entry}, "
             f"got total length {len(entries_str)}: {entries_str!r}"
         )
