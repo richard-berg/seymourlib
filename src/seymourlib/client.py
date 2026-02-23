@@ -8,6 +8,7 @@ import time
 
 from tenacity import (
     AsyncRetrying,
+    RetryError,
     after_log,
     before_sleep_log,
     retry_if_exception_type,
@@ -122,13 +123,9 @@ class SeymourClient:
 
     async def _health_check(self) -> None:
         """Perform a lightweight health check by requesting status."""
-        # Use a shorter timeout for health checks
-        original_timeout = self.request_timeout
-        self.request_timeout = min(HEALTH_CHECK_TIMEOUT, original_timeout)
-        try:
-            await self.get_status()
-        finally:
-            self.request_timeout = original_timeout
+        hc_timeout = min(HEALTH_CHECK_TIMEOUT, self.request_timeout)
+        raw = await self._send_and_receive(protocol.encode_status(), op_timeout=hc_timeout)
+        protocol.decode_status(raw)
 
     @property
     def is_connected(self) -> bool:
@@ -161,8 +158,20 @@ class SeymourClient:
         """Async context manager exit."""
         await self.close()
 
-    async def _execute_operation(self, frame: bytes, receive: bool = True) -> bytes | None:
-        """Execute a single transport operation with retry logic."""
+    async def _execute_operation(
+        self,
+        frame: bytes,
+        receive: bool = True,
+        op_timeout: float | None = None,
+    ) -> bytes | None:
+        """Execute a single transport operation with retry logic.
+
+        The lock serialises access so that only one send/receive pair is
+        in-flight at a time.  RS-232 (and the IP2SL bridge) is strictly
+        half-duplex: interleaving requests causes torn reads where one
+        caller consumes bytes belonging to the other's response.
+        """
+        effective_timeout = op_timeout if op_timeout is not None else self.request_timeout
         retryer = AsyncRetrying(
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=10),
@@ -174,33 +183,41 @@ class SeymourClient:
 
         async for attempt in retryer:
             with attempt:
-                # Ensure connection before operation
-                if not self._connected:
-                    await self.connect()
+                async with self._lock:
+                    # Ensure connection before operation
+                    if not self._connected:
+                        await self._connect_with_retry()
 
-                # Execute with timeout
-                async with asyncio.timeout(self.request_timeout):
-                    await self.transport.send(frame)
-                    if receive:
-                        response = await self.transport.receive()
-                        self._last_successful_operation = time.time()
-                        return response
-                    else:
-                        self._last_successful_operation = time.time()
-                        return None
+                    # Execute with timeout
+                    async with asyncio.timeout(effective_timeout):
+                        await self.transport.send(frame)
+                        if receive:
+                            response = await self.transport.receive()
+                            self._last_successful_operation = time.time()
+                            return response
+                        else:
+                            self._last_successful_operation = time.time()
+                            return None
 
         # This should never be reached due to retry logic, but satisfy type checker
         return None
 
-    async def _send_and_maybe_receive(self, frame: bytes, receive: bool = True) -> bytes | None:
+    async def _send_and_maybe_receive(
+        self,
+        frame: bytes,
+        receive: bool = True,
+        op_timeout: float | None = None,
+    ) -> bytes | None:
         """Send frame and optionally receive response with automatic reconnection."""
         try:
             logging.debug("Sending frame: %s", frame)
-            return await self._execute_operation(frame, receive)
+            return await self._execute_operation(frame, receive, op_timeout=op_timeout)
         except Exception as exc:
             # Mark disconnected for any transport error
             self._connected = False
-            if isinstance(exc, SeymourTransportError | TimeoutError | ConnectionError | OSError):
+            if isinstance(
+                exc, SeymourTransportError | RetryError | TimeoutError | ConnectionError | OSError
+            ):
                 raise SeymourConnectionError("Transport operation failed after retries") from exc
             else:
                 raise SeymourProtocolError("Protocol or unexpected error") from exc
@@ -209,9 +226,9 @@ class SeymourClient:
         """Low-level: send frame without awaiting reply."""
         await self._send_and_maybe_receive(frame, receive=False)
 
-    async def _send_and_receive(self, frame: bytes) -> bytes:
+    async def _send_and_receive(self, frame: bytes, op_timeout: float | None = None) -> bytes:
         """Low-level: send frame and await reply frame."""
-        raw = await self._send_and_maybe_receive(frame, receive=True)
+        raw = await self._send_and_maybe_receive(frame, receive=True, op_timeout=op_timeout)
         logging.debug("Received frame: %s", raw)
         assert raw is not None
         return raw

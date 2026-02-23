@@ -11,7 +11,6 @@ from seymourlib import protocol
 from seymourlib.client import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_REQUEST_TIMEOUT,
-    HEALTH_CHECK_TIMEOUT,
     SeymourClient,
 )
 from seymourlib.exceptions import (
@@ -441,8 +440,7 @@ class TestSeymourClientOperations:
         transport.send_mock.side_effect = SeymourTransportError("Transport failed")
         await client.connect()
 
-        # Should raise RetryError due to tenacity wrapping the transport error
-        with pytest.raises(SeymourProtocolError):
+        with pytest.raises(SeymourConnectionError):
             await client._send_and_maybe_receive(b"[frame]")
 
         assert not client.is_connected
@@ -717,41 +715,35 @@ class TestSeymourClientHealthCheckIntegration:
     async def test_health_check_timeout_modification(
         self, client: SeymourClient, transport: MockTransport
     ) -> None:
-        """Test health check temporarily modifies request timeout."""
+        """Test health check uses a shorter timeout without mutating the instance."""
         original_timeout = client.request_timeout
         assert original_timeout == 1.0
 
-        # Mock get_status to verify timeout is modified
-        async def check_timeout_during_call() -> protocol.MaskStatus:
-            # During health check, timeout should be min of original and HEALTH_CHECK_TIMEOUT
-            expected_timeout = min(HEALTH_CHECK_TIMEOUT, original_timeout)
-            assert client.request_timeout == expected_timeout
-            return protocol.MaskStatus(code=protocol.StatusCode.STOPPED_AT_RATIO)
+        # Return a valid status frame so decode_status succeeds
+        transport.receive_mock.return_value = b"[01P]"  # valid stopped status
 
-        with patch.object(client, "get_status", side_effect=check_timeout_during_call):
-            await client.connect()
-            await client._health_check()
+        await client.connect()
+        await client._health_check()
 
-            # After health check, timeout should be restored
-            assert client.request_timeout == original_timeout
+        # request_timeout must NOT have been mutated
+        assert client.request_timeout == original_timeout
 
     @pytest.mark.asyncio
     async def test_health_check_timeout_restoration_on_exception(
         self, client: SeymourClient, transport: MockTransport
     ) -> None:
-        """Test timeout is restored even if health check fails."""
+        """Test timeout is not mutated even if health check fails."""
         original_timeout = client.request_timeout
 
-        with patch.object(
-            client, "get_status", side_effect=SeymourTransportError("Health check failed")
-        ):
-            await client.connect()
+        transport.send_mock.side_effect = SeymourTransportError("Health check failed")
 
-            with pytest.raises(SeymourTransportError):
-                await client._health_check()
+        await client.connect()
 
-            # Timeout should still be restored
-            assert client.request_timeout == original_timeout
+        with pytest.raises(SeymourConnectionError):
+            await client._health_check()
+
+        # Timeout must still be the original value
+        assert client.request_timeout == original_timeout
 
 
 class TestSeymourClientEdgeCases:
@@ -800,30 +792,36 @@ class TestSeymourClientEdgeCases:
         assert b"[response2]" in results
 
     @pytest.mark.asyncio
-    async def test_health_monitoring_with_exceptions(self, client: SeymourClient) -> None:
-        """Test health monitoring continues after unexpected exceptions."""
-        exception_count = 0
+    async def test_health_monitoring_with_exceptions(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
+        """Test health monitoring continues after transport exceptions."""
+        call_count = 0
+        original_send = transport.send_mock
 
-        async def failing_get_status() -> protocol.MaskStatus:
-            nonlocal exception_count
-            exception_count += 1
-            if exception_count <= 2:
-                raise ValueError(f"Unexpected error {exception_count}")
-            return protocol.MaskStatus(code=protocol.StatusCode.STOPPED_AT_RATIO)
+        async def failing_send(data: bytes) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                raise SeymourTransportError(f"Transient failure {call_count}")
+            await original_send(data)
 
-        with patch.object(client, "get_status", side_effect=failing_get_status):
-            await client.connect()
-            client._last_successful_operation = 0.0  # Force health checks
+        # Return a valid status frame for successful health checks
+        transport.receive_mock.return_value = b"[01P]"
 
-            await client.start_health_monitoring(interval=0.05)
+        await client.connect()
+        client._last_successful_operation = 0.0  # Force health checks
 
-            # Wait for multiple health check cycles - longer to ensure multiple attempts
-            await asyncio.sleep(0.3)
+        transport.send_mock.side_effect = failing_send
 
-            # Health monitoring should still be running despite exceptions
-            assert client._health_check_task is not None and not client._health_check_task.done()
-            # Should have attempted at least once (may not reach 2 due to timing/disconnection)
-            assert exception_count >= 1
+        await client.start_health_monitoring(interval=0.05)
+
+        # Wait for multiple health check cycles
+        await asyncio.sleep(0.5)
+
+        # Health monitoring should still be running despite exceptions
+        assert client._health_check_task is not None and not client._health_check_task.done()
+        assert call_count >= 1
 
         await client.close()
 

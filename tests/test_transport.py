@@ -45,8 +45,6 @@ class TestSeymourTransportBase:
         """Test transport initialization."""
         assert transport.reader is None
         assert transport.writer is None
-        assert transport._lock is not None
-        assert isinstance(transport._lock, asyncio.Lock)
         assert not transport.connect_called
 
     @pytest.mark.asyncio
@@ -115,7 +113,11 @@ class TestSeymourTransportBase:
 
     @pytest.mark.asyncio
     async def test_send_concurrency_protection(self, transport: MockTransport) -> None:
-        """Test that send operations are properly serialized."""
+        """Test that concurrent send calls produce complete, non-jumbled frames.
+
+        Serialisation is enforced at the client level (SeymourClient._lock).
+        This test verifies the transport itself does not corrupt frame data.
+        """
         await transport.connect()
         assert transport.writer is not None
         s = b""

@@ -17,7 +17,6 @@ class SeymourTransport:
     def __init__(self) -> None:
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
-        self._lock = asyncio.Lock()
 
     @abstractmethod
     async def connect(self) -> None:
@@ -40,9 +39,8 @@ class SeymourTransport:
         if not self.writer:
             raise SeymourTransportError("Not connected")
 
-        async with self._lock:
-            self.writer.write(data)
-            await self.writer.drain()
+        self.writer.write(data)
+        await self.writer.drain()
 
     async def receive(self) -> bytes:
         """
