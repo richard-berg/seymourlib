@@ -162,7 +162,13 @@ class SeymourClient:
         await self.close()
 
     async def _execute_operation(self, frame: bytes, receive: bool = True) -> bytes | None:
-        """Execute a single transport operation with retry logic."""
+        """Execute a single transport operation with retry logic.
+
+        The lock serialises access so that only one send/receive pair is
+        in-flight at a time.  RS-232 (and the IP2SL bridge) is strictly
+        half-duplex: interleaving requests causes torn reads where one
+        caller consumes bytes belonging to the other's response.
+        """
         retryer = AsyncRetrying(
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=10),
@@ -174,20 +180,21 @@ class SeymourClient:
 
         async for attempt in retryer:
             with attempt:
-                # Ensure connection before operation
-                if not self._connected:
-                    await self.connect()
+                async with self._lock:
+                    # Ensure connection before operation
+                    if not self._connected:
+                        await self._connect_with_retry()
 
-                # Execute with timeout
-                async with asyncio.timeout(self.request_timeout):
-                    await self.transport.send(frame)
-                    if receive:
-                        response = await self.transport.receive()
-                        self._last_successful_operation = time.time()
-                        return response
-                    else:
-                        self._last_successful_operation = time.time()
-                        return None
+                    # Execute with timeout
+                    async with asyncio.timeout(self.request_timeout):
+                        await self.transport.send(frame)
+                        if receive:
+                            response = await self.transport.receive()
+                            self._last_successful_operation = time.time()
+                            return response
+                        else:
+                            self._last_successful_operation = time.time()
+                            return None
 
         # This should never be reached due to retry logic, but satisfy type checker
         return None
