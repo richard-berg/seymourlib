@@ -3,6 +3,7 @@ import re
 import pytest
 
 from seymourlib import protocol
+from seymourlib.exceptions import SeymourProtocolError
 
 
 class TestSingleByte:
@@ -134,16 +135,16 @@ class TestSerial:
 
     def test_invalid_serial_format(self) -> None:
         """Test that malformed serial numbers are rejected."""
-        with pytest.raises(ValueError, match="Malformed serial number"):
+        with pytest.raises(SeymourProtocolError, match="Malformed serial number"):
             protocol.Serial.from_serial_number(b"AB1225-12345")  # Missing hyphen
 
-        with pytest.raises(ValueError, match="Malformed serial number"):
+        with pytest.raises(SeymourProtocolError, match="Malformed serial number"):
             protocol.Serial.from_serial_number(b"AB-12-12345")  # Wrong month/year format
 
-        with pytest.raises(ValueError, match="Malformed serial number"):
+        with pytest.raises(SeymourProtocolError, match="Malformed serial number"):
             protocol.Serial.from_serial_number(b"ABC-1225-12345")  # Wrong model code length
 
-        with pytest.raises(ValueError, match="Malformed serial number"):
+        with pytest.raises(SeymourProtocolError, match="Malformed serial number"):
             protocol.Serial.from_serial_number(b"AB-1225-1234")  # Wrong production number length
 
 
@@ -185,11 +186,11 @@ class TestRatioSetting:
 
     def test_invalid_ratio_setting_format(self) -> None:
         """Test that malformed ratio setting entries are rejected."""
-        with pytest.raises(ValueError, match="Malformed ratio setting entry"):
+        with pytest.raises(SeymourProtocolError, match="Malformed ratio setting entry"):
             # Too short
             protocol.RatioSetting.from_response_entry(b"123Test", 1)
 
-        with pytest.raises(ValueError, match="Malformed ratio setting entry"):
+        with pytest.raises(SeymourProtocolError, match="Malformed ratio setting entry"):
             # Invalid ratio format
             protocol.RatioSetting.from_response_entry(b"abcTestLbl16.0  12.0  50.0-5.0", 1)
 
@@ -398,40 +399,40 @@ class TestErrorCases:
     """Test error handling and edge cases."""
 
     def test_decode_status_malformed(self) -> None:
-        """Test that malformed status responses raise ValueError."""
-        with pytest.raises(ValueError, match="Malformed status response"):
+        """Test that malformed status responses raise SeymourProtocolError."""
+        with pytest.raises(SeymourProtocolError, match="Malformed status response"):
             protocol.decode_status(b"[02P123]")  # Wrong protocol version
 
-        with pytest.raises(ValueError, match="Malformed status response"):
+        with pytest.raises(SeymourProtocolError, match="Malformed status response"):
             protocol.decode_status(b"[01Z123]")  # Invalid status code
 
-        with pytest.raises(ValueError, match="Malformed status response"):
+        with pytest.raises(SeymourProtocolError, match="Malformed status response"):
             protocol.decode_status(b"[01P12]")  # Invalid ratio format
 
     def test_decode_positions_malformed(self) -> None:
-        """Test that malformed positions responses raise ValueError."""
-        with pytest.raises(ValueError, match="Malformed positions response"):
+        """Test that malformed positions responses raise SeymourProtocolError."""
+        with pytest.raises(SeymourProtocolError, match="Malformed positions response"):
             protocol.decode_positions(b"[025T50.0]")  # Wrong protocol version
 
-        with pytest.raises(ValueError, match="Malformed motor position entries"):
+        with pytest.raises(SeymourProtocolError, match="Malformed motor position entries"):
             protocol.decode_positions(b"[011Z50.0]")  # Invalid motor ID
 
-        with pytest.raises(ValueError, match="Malformed motor position entries"):
+        with pytest.raises(SeymourProtocolError, match="Malformed motor position entries"):
             protocol.decode_positions(b"[012T50.0]")  # Missing second motor
 
     def test_decode_system_info_malformed(self) -> None:
-        """Test that malformed system info responses raise ValueError."""
-        with pytest.raises(ValueError, match="Malformed system info response"):
+        """Test that malformed system info responses raise SeymourProtocolError."""
+        with pytest.raises(SeymourProtocolError, match="Malformed system info response"):
             protocol.decode_system_info(b"[02TestScreen]")  # Wrong protocol version
 
-        with pytest.raises(ValueError, match="Malformed system info response"):
+        with pytest.raises(SeymourProtocolError, match="Malformed system info response"):
             protocol.decode_system_info(b"[01TooShort]")  # Too short
 
     def test_decode_settings_malformed(self) -> None:
-        """Test that malformed settings responses raise ValueError."""
-        with pytest.raises(ValueError, match="Malformed settings response"):
+        """Test that malformed settings responses raise SeymourProtocolError."""
+        with pytest.raises(SeymourProtocolError, match="Malformed settings response"):
             protocol.decode_settings(b"[02101...]")  # Wrong protocol version
 
-        with pytest.raises(ValueError, match="Expected 1 ratio entries"):
+        with pytest.raises(SeymourProtocolError, match="Expected 1 ratio entries"):
             # Wrong entry length - says 1 ratio but data is too short
             protocol.decode_settings(b"[01101short]")

@@ -10,5 +10,5 @@ class SeymourProtocolError(SeymourError):
     pass
 
 
-class SeymourTransportError(Exception):
+class SeymourTransportError(SeymourError):
     pass
