@@ -405,7 +405,10 @@ class TestSeymourClientOperations:
     ) -> None:
         """Test operation retries on transport errors."""
         # Fail once, then succeed
-        transport.send_mock.side_effect = [SeymourTransportError("Transport error"), None]
+        transport.send_mock.side_effect = [
+            SeymourTransportError("Transport error"),
+            None,
+        ]
         transport.receive_mock.return_value = b"[response]"
 
         await client.connect()
@@ -449,14 +452,20 @@ class TestSeymourClientOperations:
     async def test_send_and_maybe_receive_protocol_error(
         self, client: SeymourClient, transport: MockTransport
     ) -> None:
-        """Test non-transport errors raise protocol error."""
+        """Test non-transport errors raise protocol error without disconnecting.
+
+        Protocol errors indicate the connection is fine but the device
+        sent unexpected data.  The client should remain connected so that
+        subsequent operations can succeed without a needless reconnect.
+        """
         transport.send_mock.side_effect = ValueError("Protocol error")
         await client.connect()
 
         with pytest.raises(SeymourProtocolError):
             await client._send_and_maybe_receive(b"[frame]")
 
-        assert not client.is_connected
+        # Connection should stay up — only transport errors disconnect.
+        assert client.is_connected
 
 
 class TestSeymourClientPublicAPI:

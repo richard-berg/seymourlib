@@ -57,6 +57,31 @@ class SeymourTransport:
         except asyncio.IncompleteReadError as exc:
             raise SeymourTransportError("Connection closed") from exc
 
+    async def drain_read_buffer(self) -> bytes:
+        """Discard any stale bytes sitting in the receive buffer.
+
+        Returns whatever was drained (may be empty).  This is called
+        before each send to prevent a desynchronised buffer from causing
+        the next ``receive()`` to return a frame belonging to a previous
+        request.
+        """
+        if not self.reader:
+            return b""
+
+        drained = b""
+        # StreamReader buffers incoming data internally.  A non-blocking
+        # read of whatever is already buffered is safe; we set a tiny
+        # timeout so that we never actually block waiting for the device.
+        while True:
+            try:
+                chunk = await asyncio.wait_for(self.reader.read(4096), timeout=0.01)
+                if not chunk:
+                    break
+                drained += chunk
+            except TimeoutError:
+                break
+        return drained
+
 
 class TCPTransport(SeymourTransport):
     def __init__(self, host: str, port: int = ITACH_SERIAL_PORT) -> None:
@@ -65,6 +90,10 @@ class TCPTransport(SeymourTransport):
         self.port = port
 
     async def connect(self) -> None:
+        # Close any existing connection first to avoid leaking the TCP
+        # socket.  The IP2SL only accepts one connection per serial port;
+        # a leaked socket holds that slot and blocks all future connects.
+        await self.close()
         self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
 
 
@@ -75,6 +104,7 @@ class SerialTransport(SeymourTransport):
         self.baudrate = baudrate
 
     async def connect(self) -> None:
+        await self.close()
         try:
             import serial_asyncio
         except Exception as exc:

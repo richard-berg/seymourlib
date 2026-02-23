@@ -29,15 +29,11 @@ These tests exercise the fix from several angles:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-
-import pytest
 
 from seymourlib import protocol
 from seymourlib.client import SeymourClient
 from seymourlib.exceptions import SeymourProtocolError
 from seymourlib.transport import SeymourTransport
-
 
 # ---------------------------------------------------------------------------
 # Helpers

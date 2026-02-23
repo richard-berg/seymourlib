@@ -17,7 +17,11 @@ from tenacity import (
 )
 
 from . import protocol
-from .exceptions import SeymourConnectionError, SeymourProtocolError, SeymourTransportError
+from .exceptions import (
+    SeymourConnectionError,
+    SeymourProtocolError,
+    SeymourTransportError,
+)
 from .transport import SeymourTransport
 
 _LOGGER = logging.getLogger(__name__)
@@ -188,6 +192,21 @@ class SeymourClient:
                     if not self._connected:
                         await self._connect_with_retry()
 
+                    # Drain any stale bytes from the buffer before sending.
+                    # This prevents a desynchronised buffer (e.g. from a
+                    # previous timed-out request) from causing the next
+                    # receive() to return the wrong frame.
+                    #
+                    # This is safe because the Seymour protocol does not
+                    # have any unsolicited frames or notifications.
+                    drained = await self.transport.drain_read_buffer()
+                    if drained:
+                        _LOGGER.warning(
+                            "Drained %d stale bytes from buffer before send: %r",
+                            len(drained),
+                            drained[:80],
+                        )
+
                     # Execute with timeout
                     async with asyncio.timeout(effective_timeout):
                         await self.transport.send(frame)
@@ -212,15 +231,24 @@ class SeymourClient:
         try:
             logging.debug("Sending frame: %s", frame)
             return await self._execute_operation(frame, receive, op_timeout=op_timeout)
-        except Exception as exc:
-            # Mark disconnected for any transport error
+        except (
+            SeymourTransportError,
+            RetryError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        ) as exc:
+            # Only mark disconnected for transport-level failures.
+            # Protocol errors (malformed response) do NOT indicate a
+            # broken connection and should not trigger reconnection.
             self._connected = False
-            if isinstance(
-                exc, SeymourTransportError | RetryError | TimeoutError | ConnectionError | OSError
-            ):
-                raise SeymourConnectionError("Transport operation failed after retries") from exc
-            else:
-                raise SeymourProtocolError("Protocol or unexpected error") from exc
+            raise SeymourConnectionError("Transport operation failed after retries") from exc
+        except SeymourProtocolError:
+            # The connection is fine; the device sent a parseable but
+            # unexpected frame.  Re-raise without touching _connected.
+            raise
+        except Exception as exc:
+            raise SeymourProtocolError("Protocol or unexpected error") from exc
 
     async def _send(self, frame: bytes) -> None:
         """Low-level: send frame without awaiting reply."""
