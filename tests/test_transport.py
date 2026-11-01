@@ -601,10 +601,11 @@ class TestEdgeCasesAndErrorHandling:
 
         assert transport.reader is not None
 
-        # Test receiving minimal frame
-        transport.reader.readuntil.return_value = b"]"
+        # A bare frame end is noise and is skipped until a frame arrives
+        transport.reader.readuntil.side_effect = [b"]", b"[01P]"]
         result = await transport.receive()
-        assert result == b"]"
+        assert result == b"[01P]"
+        transport.reader.readuntil.side_effect = None
 
         # Test receiving frame with special characters
         special_frame = b"[special\x00\x01\x02]"

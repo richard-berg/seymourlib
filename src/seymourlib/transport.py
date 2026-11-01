@@ -80,16 +80,26 @@ class SeymourTransport:
         """
         Get one data frame from transport, blocking until frame end (']') is received.
 
+        Bytes before the frame's '[' are line noise, such as the garbage a
+        UART emits when the controller powers up, and are discarded.
+
         Note: no timeout here; caller should use structured concurrency if desired.
         """
         if not self.reader:
             raise SeymourTransportError("Not connected")
 
-        try:
-            data = await asyncio.wait_for(self.reader.readuntil(b"]"), timeout=None)
-            return data
-        except asyncio.IncompleteReadError as exc:
-            raise SeymourTransportError("Connection closed") from exc
+        while True:
+            try:
+                data = await self.reader.readuntil(b"]")
+            except asyncio.IncompleteReadError as exc:
+                raise SeymourTransportError("Connection closed") from exc
+            start = data.rfind(b"[")
+            if start < 0:
+                _LOGGER.debug("Discarding bytes outside a frame: %r", data)
+                continue
+            if start > 0:
+                _LOGGER.debug("Discarding bytes before a frame: %r", data[:start])
+            return data[start:]
 
     async def drain_read_buffer(self) -> bytes:
         """Discard any stale bytes sitting in the receive buffer.

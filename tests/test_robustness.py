@@ -78,3 +78,23 @@ class TestCloseIsBestEffort:
         await transport.close()
         assert writer.aborted
         assert transport.writer is None
+
+
+class TestReceiveResyncs:
+    @pytest.mark.parametrize(
+        "noise",
+        [b"\x00\xff junk", b"garbage]", b"\x00[0"],
+        ids=["no-frame-end", "stray-frame-end", "torn-frame"],
+    )
+    async def test_noise_before_a_frame_is_discarded(self, ip2sl: FakeIP2SL, noise: bytes) -> None:
+        async def noisy(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.write(noise + srv.responses[frame])
+
+        ip2sl.behavior = noisy
+        client = make_client(ip2sl)
+        status = await client.get_status()
+        assert status.ratio is not None
+        assert status.ratio.id == "178"
+        await client.close()
