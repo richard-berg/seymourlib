@@ -135,12 +135,25 @@ class Serial:
     month: int
     year: int
     production_number: str
+    # The serial number as sent, when it isn't in the usual format
+    raw: str | None = None
 
     def to_serial_number(self) -> str:
-        """Return the serial number as a string, without the protocol's space padding."""
+        """Return the serial number as a string, without the protocol's space padding.
+
+        This is empty when the controller has no serial number programmed.
+        """
+        if self.raw is not None:
+            return self.raw.strip()
         return (
             f"{self.model_code}-{self.month:02d}{self.year:02d}-{self.production_number}"
         ).rstrip()
+
+    @staticmethod
+    def unparsed(serial_number: bytes) -> Serial:
+        """Return a Serial for a serial number that isn't in the "XX-MMYY-PPPPP" format."""
+        raw = serial_number.decode("ascii", errors="replace")
+        return Serial(model_code="", month=0, year=0, production_number="", raw=raw)
 
     PARSER_RE = re.compile(
         rb"(?P<model_code>.{2})-(?P<month>[0-9]{2})(?P<year>[0-9]{2})-(?P<production_number>.{5})"
@@ -334,7 +347,7 @@ def decode_status(raw: bytes) -> MaskStatus:
     return MaskStatus(code=StatusCode(status_code), ratio=ratio)
 
 
-_POSITIONS_RE = _frame_re(rb"(?P<num_motors>[1-4])(?P<entries>.+)")
+_POSITIONS_RE = _frame_re(rb"(?P<num_motors>[0-4])(?P<entries>.*)")
 _ASCII_PCT_RE = rb"([0-9.\-]{4})"
 
 
@@ -381,7 +394,12 @@ def decode_system_info(raw: bytes) -> SystemInfo:
     height = float(match.group("height"))
 
     serial_str = match.group("serial")
-    serial = Serial.from_serial_number(serial_str)
+    try:
+        serial = Serial.from_serial_number(serial_str)
+    except SeymourProtocolError:
+        # A controller without a programmed serial number sends spaces; it is
+        # still a working controller.
+        serial = Serial.unparsed(serial_str)
 
     mask_ids_str = match.group("mask_ids").decode("ascii")
     mask_ids = [MotorID(c) for c in mask_ids_str]
@@ -395,7 +413,7 @@ def decode_system_info(raw: bytes) -> SystemInfo:
     )
 
 
-_SETTINGS_RE = _frame_re(rb"(?P<num_motors>[0-9])(?P<num_ratios>[0-9]{2})(?P<entries>.+)")
+_SETTINGS_RE = _frame_re(rb"(?P<num_motors>[0-9])(?P<num_ratios>[0-9]{2})(?P<entries>.*)")
 
 
 @_decoder

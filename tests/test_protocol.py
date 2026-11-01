@@ -456,10 +456,6 @@ class TestErrorCases:
                 b"[01PRH-123\xe9            0123.00069.1SS-0325-Berg TB]",
             ),
             (protocol.decode_system_info, b"[01PRH-123             01..3.0069.1SS-0325-Berg TB]"),
-            (
-                protocol.decode_system_info,
-                b"[01PRH-123             0123.00069.1S\xff-0325-Berg TB]",
-            ),
             (protocol.decode_settings, b"[01101123TestLbl 1.6.0.092.0050.0-5.0]"),
             (protocol.decode_settings, b"[01101123Test\xffbl 160.01092.0050.0-5.0]"),
         ],
@@ -471,3 +467,22 @@ class TestErrorCases:
         with pytest.raises(SeymourProtocolError) as exc_info:
             decode(raw)
         assert isinstance(exc_info.value.__cause__, ValueError)
+
+    @pytest.mark.parametrize(
+        ("serial", "expected"),
+        [
+            (b"             ", ""),
+            (b"ABCDEFGHIJKLM", "ABCDEFGHIJKLM"),
+            (b"SN 12345     ", "SN 12345"),
+        ],
+    )
+    def test_decode_system_info_unusual_serial(self, serial: bytes, expected: str) -> None:
+        """A blank or unusual serial number doesn't make the controller unusable."""
+        info = protocol.decode_system_info(b"[01PRH-123             0123.00069.1" + serial + b"TB]")
+        assert info.serial_number.to_serial_number() == expected
+        assert info.mask_ids == [protocol.MotorID.TOP, protocol.MotorID.BOTTOM]
+
+    def test_decode_without_motors_or_presets(self) -> None:
+        """An unconfigured controller reports no motors and no presets."""
+        assert protocol.decode_positions(b"[010]") == []
+        assert protocol.decode_settings(b"[01000]") == []
