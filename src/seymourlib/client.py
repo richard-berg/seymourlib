@@ -284,7 +284,7 @@ class SeymourClient:
 
     async def get_diagnostics(self, option: protocol.DiagnosticOption) -> str:
         raw = await self._send_and_receive(protocol.encode_diagnostics(option))
-        return raw.decode("ascii")
+        return raw.decode("ascii", errors="replace")
 
     async def move_out(self, motor: protocol.MotorID, movement: protocol.MovementCode) -> None:
         frame = protocol.encode_move_out(motor, movement)

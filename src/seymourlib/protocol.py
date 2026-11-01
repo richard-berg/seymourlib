@@ -5,11 +5,35 @@ Implementation for the Seymour RS232 protocol version 01.
 from __future__ import annotations
 
 import enum
+import functools
 import re
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 
 import attrs
 
 from .exceptions import SeymourProtocolError
+
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def _decoder(func: Callable[_P, _T]) -> Callable[_P, _T]:  # noqa: UP047 - supports 3.11
+    """Raise SeymourProtocolError for any malformed field, never ValueError.
+
+    The regexes only check the shape of a field, so values such as ``1.2.``
+    or bytes outside ASCII still reach ``float()`` and ``decode()``.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        try:
+            return func(*args, **kwargs)
+        except ValueError as exc:  # also UnicodeDecodeError
+            raise SeymourProtocolError(f"Malformed field in response: {exc}") from exc
+
+    return wrapper
+
 
 FRAME_START = b"["
 FRAME_END = b"]"
@@ -123,6 +147,7 @@ class Serial:
     )
 
     @staticmethod
+    @_decoder
     def from_serial_number(serial_number: bytes) -> Serial:
         """
         Parse a serial number bytestring into a Serial object.
@@ -165,6 +190,7 @@ class RatioSetting:
     motor_adjustments_pct: list[float]
 
     @staticmethod
+    @_decoder
     def from_response_entry(entry: bytes, num_motors: int) -> RatioSetting:
         """
         Parse a ratio setting info string into a RatioSetting object.
@@ -297,6 +323,7 @@ def _frame_re(regex_body: bytes) -> re.Pattern[bytes]:
 _STATUS_RE = _frame_re(StatusCode.regex() + Ratio.regex() + rb"?")
 
 
+@_decoder
 def decode_status(raw: bytes) -> MaskStatus:
     match = _STATUS_RE.match(raw)
     if not match:
@@ -311,6 +338,7 @@ _POSITIONS_RE = _frame_re(rb"(?P<num_motors>[1-4])(?P<entries>.+)")
 _ASCII_PCT_RE = rb"([0-9.\-]{4})"
 
 
+@_decoder
 def decode_positions(raw: bytes) -> list[MaskPosition]:
     match = _POSITIONS_RE.match(raw)
     if not match:
@@ -342,6 +370,7 @@ _SYSTEM_INFO_RE = _frame_re(
 )
 
 
+@_decoder
 def decode_system_info(raw: bytes) -> SystemInfo:
     match = _SYSTEM_INFO_RE.match(raw)
     if not match:
@@ -369,6 +398,7 @@ def decode_system_info(raw: bytes) -> SystemInfo:
 _SETTINGS_RE = _frame_re(rb"(?P<num_motors>[0-9])(?P<num_ratios>[0-9]{2})(?P<entries>.+)")
 
 
+@_decoder
 def decode_settings(raw: bytes) -> list[RatioSetting]:
     match = _SETTINGS_RE.match(raw)
     if not match:

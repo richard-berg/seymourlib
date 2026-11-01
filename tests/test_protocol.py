@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 
 import pytest
 
@@ -443,3 +444,30 @@ class TestErrorCases:
         with pytest.raises(SeymourProtocolError, match="Expected 1 ratio entries"):
             # Wrong entry length - says 1 ratio but data is too short
             protocol.decode_settings(b"[01101short]")
+
+    @pytest.mark.parametrize(
+        ("decode", "raw"),
+        [
+            (protocol.decode_positions, b"[011T----]"),
+            (protocol.decode_positions, b"[011T1.2.]"),
+            (protocol.decode_positions, b"[012T50.0B-.-.]"),
+            (
+                protocol.decode_system_info,
+                b"[01PRH-123\xe9            0123.00069.1SS-0325-Berg TB]",
+            ),
+            (protocol.decode_system_info, b"[01PRH-123             01..3.0069.1SS-0325-Berg TB]"),
+            (
+                protocol.decode_system_info,
+                b"[01PRH-123             0123.00069.1S\xff-0325-Berg TB]",
+            ),
+            (protocol.decode_settings, b"[01101123TestLbl 1.6.0.092.0050.0-5.0]"),
+            (protocol.decode_settings, b"[01101123Test\xffbl 160.01092.0050.0-5.0]"),
+        ],
+    )
+    def test_malformed_fields_raise_protocol_error(
+        self, decode: Callable[[bytes], object], raw: bytes
+    ) -> None:
+        """Fields that pass the regexes but don't parse never leak ValueError."""
+        with pytest.raises(SeymourProtocolError) as exc_info:
+            decode(raw)
+        assert isinstance(exc_info.value.__cause__, ValueError)
