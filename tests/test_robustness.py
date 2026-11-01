@@ -460,3 +460,57 @@ def test_dead_peer_detection_is_best_effort(caplog: pytest.LogCaptureFixture) ->
     assert "Couldn't set socket option" in caplog.text
     # Transports that aren't TCP keep their defaults
     transport_module._detect_dead_peers(SimpleNamespace(transport=object()))  # type: ignore[arg-type]
+
+
+class TestRelativeMovesAreNotRepeated:
+    @pytest.mark.parametrize(
+        ("movement", "expected_sends"),
+        [
+            (protocol.MovementCode.JOG, 1),
+            (protocol.MovementCode.MOVE, 1),
+            (protocol.MovementCode.UNTIL_LIMIT, 3),
+        ],
+    )
+    async def test_failure_after_sending(
+        self,
+        ip2sl: FakeIP2SL,
+        monkeypatch: pytest.MonkeyPatch,
+        movement: protocol.MovementCode,
+        expected_sends: int,
+    ) -> None:
+        client = make_client(ip2sl)
+        await client.connect()
+        sends = 0
+
+        async def send_then_fail(self: URLTransport, data: bytes) -> None:
+            nonlocal sends
+            sends += 1
+            # The frame left, but the connection broke before that was confirmed
+            raise ConnectionResetError
+
+        monkeypatch.setattr(URLTransport, "send", send_then_fail)
+        with pytest.raises(SeymourConnectionError):
+            await client.move_out(protocol.MotorID.TOP, movement)
+        assert sends == expected_sends
+        await client.close()
+
+    async def test_retried_while_not_sent(
+        self, ip2sl: FakeIP2SL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative move is retried when the failure came before sending it."""
+        client = make_client(ip2sl)
+        real_connect = URLTransport.connect
+        connects = 0
+
+        async def flaky_connect(self: URLTransport) -> None:
+            nonlocal connects
+            connects += 1
+            if connects == 1:
+                raise ConnectionRefusedError
+            await real_connect(self)
+
+        monkeypatch.setattr(URLTransport, "connect", flaky_connect)
+        await client.move_in(protocol.MotorID.TOP, protocol.MovementCode.JOG)
+        await asyncio.sleep(0.05)
+        assert ip2sl.count(b"[01ITJ]") == 1
+        await client.close()

@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 
 from tenacity import (
     AsyncRetrying,
     RetryError,
     after_log,
     before_sleep_log,
+    retry_if_exception,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -35,10 +37,16 @@ DEFAULT_REQUEST_TIMEOUT = 10.0
 # time only churns the bridge's TCP stack; a dead TCP connection is noticed by
 # the transport's keepalive instead.
 DEFAULT_RECONNECT_AFTER_TIMEOUTS = 3
+RETRYABLE_ERRORS = (SeymourTransportError, TimeoutError, ConnectionError, OSError)
 HEALTH_CHECK_INTERVAL = 90.0
 HEALTH_CHECK_TIMEOUT = 3.0
 # Silence that ends a diagnostics response, which has no reliable frame end.
 DIAGNOSTICS_IDLE_TIMEOUT = 0.5
+
+
+def _is_absolute(movement: protocol.MovementCode) -> bool:
+    """Return whether repeating a movement ends in the same place."""
+    return movement is protocol.MovementCode.UNTIL_LIMIT
 
 
 class SeymourClient:
@@ -221,6 +229,7 @@ class SeymourClient:
         receive: bool = True,
         op_timeout: float | None = None,
         until_idle: float | None = None,
+        idempotent: bool = True,
     ) -> bytes | None:
         """Execute a single transport operation with retry logic.
 
@@ -228,14 +237,25 @@ class SeymourClient:
         in-flight at a time.  RS-232 (and the IP2SL bridge) is strictly
         half-duplex: interleaving requests causes torn reads where one
         caller consumes bytes belonging to the other's response.
+
+        A frame that isn't idempotent, such as a relative move, is only
+        retried while it can't have reached the controller: resending one
+        that may have arrived would apply it twice.
         """
         effective_timeout = op_timeout if op_timeout is not None else self.request_timeout
+        may_have_sent = False
+
+        def mark_sent() -> None:
+            nonlocal may_have_sent
+            may_have_sent = True
+
+        def should_retry(exc: BaseException) -> bool:
+            return isinstance(exc, RETRYABLE_ERRORS) and (idempotent or not may_have_sent)
+
         retryer = AsyncRetrying(
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=0.5, min=0.5, max=10),
-            retry=retry_if_exception_type(
-                (SeymourTransportError, TimeoutError, ConnectionError, OSError)
-            ),
+            retry=retry_if_exception(should_retry),
             # Retries are routine; callers report requests that finally fail
             before_sleep=before_sleep_log(_LOGGER, logging.DEBUG),
         )
@@ -247,7 +267,9 @@ class SeymourClient:
                 async with self._lock:
                     self._raise_if_closed()
                     try:
-                        return await self._attempt(frame, receive, effective_timeout, until_idle)
+                        return await self._attempt(
+                            frame, receive, effective_timeout, until_idle, mark_sent
+                        )
                     except TimeoutError:
                         raise
                     except (SeymourTransportError, OSError):
@@ -272,6 +294,7 @@ class SeymourClient:
         receive: bool,
         op_timeout: float,
         until_idle: float | None,
+        mark_sent: Callable[[], None],
     ) -> bytes | None:
         """Send a frame once, connecting first if needed; the caller holds the lock."""
         if not self._connected:
@@ -302,6 +325,7 @@ class SeymourClient:
             )
 
         async with asyncio.timeout(op_timeout):
+            mark_sent()
             await self.transport.send(frame)
             if not receive:
                 self._mark_success()
@@ -320,12 +344,17 @@ class SeymourClient:
         receive: bool = True,
         op_timeout: float | None = None,
         until_idle: float | None = None,
+        idempotent: bool = True,
     ) -> bytes | None:
         """Send frame and optionally receive response with automatic reconnection."""
         try:
             _LOGGER.debug("Sending frame: %s", frame)
             return await self._execute_operation(
-                frame, receive, op_timeout=op_timeout, until_idle=until_idle
+                frame,
+                receive,
+                op_timeout=op_timeout,
+                until_idle=until_idle,
+                idempotent=idempotent,
             )
         except (
             SeymourTransportError,
@@ -357,9 +386,9 @@ class SeymourClient:
         except Exception as exc:
             raise SeymourConnectionError("Unexpected error; the connection was reset") from exc
 
-    async def _send(self, frame: bytes) -> None:
+    async def _send(self, frame: bytes, idempotent: bool = True) -> None:
         """Low-level: send frame without awaiting reply."""
-        await self._send_and_maybe_receive(frame, receive=False)
+        await self._send_and_maybe_receive(frame, receive=False, idempotent=idempotent)
 
     async def _send_and_receive(
         self,
@@ -400,11 +429,11 @@ class SeymourClient:
 
     async def move_out(self, motor: protocol.MotorID, movement: protocol.MovementCode) -> None:
         frame = protocol.encode_move_out(motor, movement)
-        await self._send(frame)
+        await self._send(frame, idempotent=_is_absolute(movement))
 
     async def move_in(self, motor: protocol.MotorID, movement: protocol.MovementCode) -> None:
         frame = protocol.encode_move_in(motor, movement)
-        await self._send(frame)
+        await self._send(frame, idempotent=_is_absolute(movement))
 
     async def move_to_ratio(self, ratio: protocol.Ratio) -> None:
         frame = protocol.encode_move_ratio(ratio)
