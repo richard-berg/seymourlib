@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import serialx
 
-from seymourlib.exceptions import SeymourTransportError
+from seymourlib.client import SeymourClient
+from seymourlib.exceptions import SeymourConnectionError, SeymourTransportError
 from seymourlib.transport import (
     DEFAULT_CONNECT_TIMEOUT,
     ITACH_SERIAL_PORT,
@@ -267,6 +268,41 @@ class TestURLTransport:
             assert await transport.receive() == b"[01ping]"
         finally:
             await transport.close()
+            server.close()
+            await server.wait_closed()
+
+
+class TestClientReleasesSocket:
+    """Regression tests for releasing the single IP2SL connection slot."""
+
+    @pytest.mark.asyncio
+    async def test_close_after_failed_request_closes_socket(self) -> None:
+        """A request timeout must not leave the socket open after close()."""
+        closed = asyncio.Event()
+
+        async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            # Accept the connection but never answer, like a busy or wrong port
+            await reader.read()
+            closed.set()
+            writer.close()
+
+        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        client = SeymourClient(
+            URLTransport(f"socket://127.0.0.1:{port}", connect_timeout=2),
+            max_retries=1,
+            request_timeout=0.2,
+        )
+        try:
+            await client.connect()
+            with pytest.raises(SeymourConnectionError):
+                await client.get_status()
+            assert not client.is_connected
+
+            await client.close()
+
+            await asyncio.wait_for(closed.wait(), timeout=2)
+        finally:
             server.close()
             await server.wait_closed()
 
