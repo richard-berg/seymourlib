@@ -133,6 +133,12 @@ class TestSerial:
         formatted = serial.to_serial_number().encode()
         assert formatted == original
 
+    def test_padded_serial_to_string(self) -> None:
+        """Test the space padding of a short production number is stripped."""
+        serial = protocol.Serial.from_serial_number(b"SS-0325-Berg ")
+        assert serial.production_number == "Berg "
+        assert serial.to_serial_number() == "SS-0325-Berg"
+
     def test_invalid_serial_format(self) -> None:
         """Test that malformed serial numbers are rejected."""
         with pytest.raises(SeymourProtocolError, match="Malformed serial number"):
@@ -348,6 +354,7 @@ class TestDecoding:
         assert system_info.serial_number.month == 3
         assert system_info.serial_number.year == 25
         assert system_info.serial_number.production_number == "Berg "
+        assert system_info.serial_number.to_serial_number() == "SS-0325-Berg"
         assert len(system_info.mask_ids) == 2
         assert system_info.mask_ids[0] == protocol.MotorID.TOP
         assert system_info.mask_ids[1] == protocol.MotorID.BOTTOM
