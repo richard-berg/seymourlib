@@ -9,12 +9,12 @@ import logging
 import time
 
 import pytest
-from conftest import FakeIP2SL, reset
+from conftest import FakeIP2SL, answer, reset
 
 from seymourlib import protocol
 from seymourlib import transport as transport_module
 from seymourlib.client import SeymourClient
-from seymourlib.exceptions import SeymourError, SeymourTransportError
+from seymourlib.exceptions import SeymourClientClosedError, SeymourError, SeymourTransportError
 from seymourlib.transport import URLTransport
 
 
@@ -215,4 +215,46 @@ class TestLogging:
         # NTP steps the wall clock back an hour
         monkeypatch.setattr(time, "time", lambda: client._last_successful_operation - 3600)
         assert 0 <= client.connection_stats["time_since_last_success"] < 5
+        await client.close()
+
+
+class TestCloseIsFinal:
+    async def test_request_in_flight_does_not_reconnect_after_close(self, ip2sl: FakeIP2SL) -> None:
+        async def silent_first(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            if conn > 1:
+                await answer(srv, conn, frame, writer)
+
+        ip2sl.behavior = silent_first
+        client = make_client(ip2sl)
+        await client.connect()
+        request = asyncio.create_task(client.get_status())
+        await asyncio.sleep(0.4)  # the first attempt timed out; waiting to retry
+        await client.close()
+        with pytest.raises(SeymourClientClosedError):
+            await request
+        await asyncio.sleep(0.1)
+        assert not client.is_connected
+        assert ip2sl.active == 0
+        assert ip2sl.connections == 1
+
+    async def test_closed_client_refuses_requests(self, ip2sl: FakeIP2SL) -> None:
+        client = make_client(ip2sl)
+        await client.close()
+        with pytest.raises(SeymourClientClosedError):
+            await client.connect()
+        with pytest.raises(SeymourClientClosedError):
+            await client.get_status()
+        assert ip2sl.connections == 0
+
+    async def test_disconnect_keeps_the_client_usable(self, ip2sl: FakeIP2SL) -> None:
+        client = make_client(ip2sl)
+        await client.get_status()
+        await client.disconnect()
+        assert not client.is_connected
+        await client.get_status()
+        assert ip2sl.connections == 2
+        await asyncio.sleep(0.05)
+        assert ip2sl.active == 1
         await client.close()

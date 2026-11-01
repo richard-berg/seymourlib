@@ -18,6 +18,7 @@ from tenacity import (
 
 from . import protocol
 from .exceptions import (
+    SeymourClientClosedError,
     SeymourConnectionError,
     SeymourProtocolError,
     SeymourTransportError,
@@ -44,6 +45,7 @@ class SeymourClient:
         self.transport = transport
         self._lock = asyncio.Lock()
         self._connected = False
+        self._closed = False
         self.max_retries = max_retries
         self.request_timeout = request_timeout
         # Wall clock time for display, monotonic time for intervals
@@ -67,8 +69,13 @@ class SeymourClient:
                 self._connected = True
                 self._mark_success()
 
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise SeymourClientClosedError("The client is closed")
+
     async def connect(self) -> None:
         async with self._lock:
+            self._raise_if_closed()
             if self._connected:
                 return
 
@@ -78,7 +85,24 @@ class SeymourClient:
                 self._connected = False
                 raise SeymourConnectionError("Failed to connect after all retries") from exc
 
+    async def disconnect(self) -> None:
+        """Drop the connection; the next request opens a new one.
+
+        Use this to recycle a connection that seems stuck.  Unlike close(),
+        the client stays usable.
+        """
+        async with self._lock:
+            await self._drop_connection()
+
     async def close(self) -> None:
+        """Close the client for good.
+
+        Requests in flight, such as one waiting to retry, fail at their next
+        attempt instead of reconnecting, and later requests fail at once.
+        Otherwise a request that outlives its owner would open a connection
+        nobody closes, which holds the only connection an IP2SL allows.
+        """
+        self._closed = True
         async with self._lock:
             # Stop health checking
             if self._health_check_task and not self._health_check_task.done():
@@ -89,15 +113,19 @@ class SeymourClient:
                     pass
                 self._health_check_task = None
 
-            # Always close the transport: a failed request clears _connected
-            # but leaves the socket open, and an IP2SL only accepts one
-            # connection per serial port, so a leaked socket blocks every
-            # later connect.  Closing an already-closed transport is a no-op.
-            was_connected = self._connected
-            self._connected = False
-            await self.transport.close()
-            if was_connected:
-                _LOGGER.info("Closed Seymour transport")
+            await self._drop_connection()
+
+    async def _drop_connection(self) -> None:
+        """Close the transport; the caller must hold the lock."""
+        # Always close the transport: a failed request clears _connected
+        # but leaves the socket open, and an IP2SL only accepts one
+        # connection per serial port, so a leaked socket blocks every
+        # later connect.  Closing an already-closed transport is a no-op.
+        was_connected = self._connected
+        self._connected = False
+        await self.transport.close()
+        if was_connected:
+            _LOGGER.info("Closed Seymour transport")
 
     async def start_health_monitoring(self, interval: float = HEALTH_CHECK_INTERVAL) -> None:
         """Start background health monitoring for long-running applications like Home Assistant."""
@@ -204,6 +232,7 @@ class SeymourClient:
         async for attempt in retryer:
             with attempt:
                 async with self._lock:
+                    self._raise_if_closed()
                     # Ensure connection before operation
                     if not self._connected:
                         await self._connect_with_retry()
@@ -269,6 +298,8 @@ class SeymourClient:
             # broken connection and should not trigger reconnection.
             self._connected = False
             raise SeymourConnectionError("Transport operation failed after retries") from exc
+        except SeymourClientClosedError:
+            raise
         except SeymourProtocolError:
             # The connection is fine; the device sent a parseable but
             # unexpected frame.  Re-raise without touching _connected.
