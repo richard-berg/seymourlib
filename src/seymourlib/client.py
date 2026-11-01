@@ -30,6 +30,8 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_REQUEST_TIMEOUT = 10.0
 HEALTH_CHECK_INTERVAL = 90.0
 HEALTH_CHECK_TIMEOUT = 3.0
+# Silence that ends a diagnostics response, which has no reliable frame end.
+DIAGNOSTICS_IDLE_TIMEOUT = 0.5
 
 
 class SeymourClient:
@@ -171,6 +173,7 @@ class SeymourClient:
         frame: bytes,
         receive: bool = True,
         op_timeout: float | None = None,
+        until_idle: float | None = None,
     ) -> bytes | None:
         """Execute a single transport operation with retry logic.
 
@@ -218,7 +221,11 @@ class SeymourClient:
                     async with asyncio.timeout(effective_timeout):
                         await self.transport.send(frame)
                         if receive:
-                            response = await self.transport.receive()
+                            response = await (
+                                self.transport.receive()
+                                if until_idle is None
+                                else self.transport.receive_until_idle(until_idle)
+                            )
                             self._last_successful_operation = time.time()
                             return response
                         else:
@@ -233,11 +240,14 @@ class SeymourClient:
         frame: bytes,
         receive: bool = True,
         op_timeout: float | None = None,
+        until_idle: float | None = None,
     ) -> bytes | None:
         """Send frame and optionally receive response with automatic reconnection."""
         try:
             logging.debug("Sending frame: %s", frame)
-            return await self._execute_operation(frame, receive, op_timeout=op_timeout)
+            return await self._execute_operation(
+                frame, receive, op_timeout=op_timeout, until_idle=until_idle
+            )
         except (
             SeymourTransportError,
             RetryError,
@@ -261,9 +271,16 @@ class SeymourClient:
         """Low-level: send frame without awaiting reply."""
         await self._send_and_maybe_receive(frame, receive=False)
 
-    async def _send_and_receive(self, frame: bytes, op_timeout: float | None = None) -> bytes:
+    async def _send_and_receive(
+        self,
+        frame: bytes,
+        op_timeout: float | None = None,
+        until_idle: float | None = None,
+    ) -> bytes:
         """Low-level: send frame and await reply frame."""
-        raw = await self._send_and_maybe_receive(frame, receive=True, op_timeout=op_timeout)
+        raw = await self._send_and_maybe_receive(
+            frame, receive=True, op_timeout=op_timeout, until_idle=until_idle
+        )
         logging.debug("Received frame: %s", raw)
         assert raw is not None
         return raw
@@ -286,7 +303,9 @@ class SeymourClient:
         return protocol.decode_settings(raw)
 
     async def get_diagnostics(self, option: protocol.DiagnosticOption) -> str:
-        raw = await self._send_and_receive(protocol.encode_diagnostics(option))
+        raw = await self._send_and_receive(
+            protocol.encode_diagnostics(option), until_idle=DIAGNOSTICS_IDLE_TIMEOUT
+        )
         return raw.decode("ascii", errors="replace")
 
     async def move_out(self, motor: protocol.MotorID, movement: protocol.MovementCode) -> None:

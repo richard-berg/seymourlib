@@ -50,6 +50,9 @@ class MockTransport(SeymourTransport):
         result = await self.receive_mock()
         return result if isinstance(result, bytes) else b"default_response"
 
+    async def receive_until_idle(self, idle: float) -> bytes:
+        return await self.receive()
+
     def reset_mocks(self) -> None:
         """Reset all mocks and response index."""
         self.connect_mock.reset_mock()

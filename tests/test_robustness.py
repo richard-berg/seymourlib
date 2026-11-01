@@ -11,9 +11,10 @@ import time
 import pytest
 from conftest import FakeIP2SL, reset
 
+from seymourlib import protocol
 from seymourlib import transport as transport_module
 from seymourlib.client import SeymourClient
-from seymourlib.exceptions import SeymourError
+from seymourlib.exceptions import SeymourError, SeymourTransportError
 from seymourlib.transport import URLTransport
 
 
@@ -137,3 +138,58 @@ class TestFrameTerminators:
         assert any(
             r.levelno == logging.WARNING and "Drained" in r.getMessage() for r in caplog.records
         )
+
+
+class TestDiagnostics:
+    async def test_response_containing_frame_ends_is_read_whole(self, ip2sl: FakeIP2SL) -> None:
+        body = b'[01@D10{"ratios": [1, 2], "x": [3]}]'
+
+        async def chunked(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            if frame.startswith(b"[01@"):
+                for i in range(0, len(body), 8):
+                    writer.write(body[i : i + 8])
+                    await asyncio.sleep(0.01)
+            else:
+                writer.write(srv.responses[frame])
+
+        ip2sl.behavior = chunked
+        client = make_client(ip2sl, request_timeout=2)
+        text = await client.get_diagnostics(protocol.DiagnosticOption.LIST_SETTINGS_JSON)
+        assert text == body.decode()
+        # Nothing was left behind to confuse the next request
+        assert (await client.get_status()).ratio is not None
+        await client.close()
+
+    async def test_receive_until_idle_on_closed_connection(self, ip2sl: FakeIP2SL) -> None:
+        async def hang_up(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.close()
+
+        ip2sl.behavior = hang_up
+        transport = URLTransport(ip2sl.url, connect_timeout=1)
+        await transport.connect()
+        await transport.send(b"[01@D00]")
+        with pytest.raises(SeymourTransportError):
+            await transport.receive_until_idle(0.1)
+        await transport.close()
+        with pytest.raises(SeymourTransportError):
+            await transport.receive_until_idle(0.1)
+
+    async def test_receive_until_idle_stops_at_end_of_stream(self, ip2sl: FakeIP2SL) -> None:
+        async def say_and_hang_up(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.write(b"[01@x]")
+            await writer.drain()
+            writer.close()
+
+        ip2sl.behavior = say_and_hang_up
+        transport = URLTransport(ip2sl.url, connect_timeout=1)
+        await transport.connect()
+        await transport.send(b"[01@D00]")
+        await asyncio.sleep(0.1)
+        assert await transport.receive_until_idle(5) == b"[01@x]"
+        await transport.close()

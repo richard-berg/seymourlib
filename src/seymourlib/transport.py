@@ -101,6 +101,30 @@ class SeymourTransport:
                 _LOGGER.debug("Discarding bytes before a frame: %r", data[:start])
             return data[start:]
 
+    async def receive_until_idle(self, idle: float) -> bytes:
+        """Get a response of unknown length: every byte until the line goes quiet.
+
+        Some responses, such as the JSON diagnostics, contain ']' themselves,
+        so they can't be read up to the frame end.  This waits for the first
+        byte without a timeout, like receive(), and then for ``idle`` seconds
+        of silence.
+        """
+        if not self.reader:
+            raise SeymourTransportError("Not connected")
+
+        data = await self.reader.read(4096)
+        if not data:
+            raise SeymourTransportError("Connection closed")
+        while True:
+            try:
+                async with asyncio.timeout(idle):
+                    chunk = await self.reader.read(4096)
+            except TimeoutError:
+                return data
+            if not chunk:
+                return data
+            data += chunk
+
     async def drain_read_buffer(self) -> bytes:
         """Discard any stale bytes sitting in the receive buffer.
 
