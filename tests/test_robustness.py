@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import time
 
 import pytest
@@ -14,7 +15,12 @@ from conftest import FakeIP2SL, answer, reset
 from seymourlib import protocol
 from seymourlib import transport as transport_module
 from seymourlib.client import SeymourClient
-from seymourlib.exceptions import SeymourClientClosedError, SeymourError, SeymourTransportError
+from seymourlib.exceptions import (
+    SeymourClientClosedError,
+    SeymourConnectionError,
+    SeymourError,
+    SeymourTransportError,
+)
 from seymourlib.transport import URLTransport
 
 
@@ -257,4 +263,41 @@ class TestCloseIsFinal:
         assert ip2sl.connections == 2
         await asyncio.sleep(0.05)
         assert ip2sl.active == 1
+        await client.close()
+
+
+class TestRetriesReconnect:
+    @pytest.mark.parametrize("how", ["fin", "rst"])
+    async def test_request_survives_a_dropped_connection(self, ip2sl: FakeIP2SL, how: str) -> None:
+        async def drop_first(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            if conn > 1:
+                await answer(srv, conn, frame, writer)
+            elif how == "fin":
+                writer.close()
+            else:
+                reset(writer)
+
+        ip2sl.behavior = drop_first
+        client = make_client(ip2sl)
+        await client.connect()
+        status = await client.get_status()
+        assert status.ratio is not None
+        assert ip2sl.connections == 2
+        await client.close()
+
+    async def test_lock_is_free_while_waiting_to_retry(self) -> None:
+        # Nothing listens on this port, so every connect is refused at once
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        client = SeymourClient(
+            URLTransport(f"socket://127.0.0.1:{port}", connect_timeout=1), request_timeout=0.3
+        )
+        request = asyncio.create_task(client.get_status())
+        await asyncio.sleep(0.1)  # the first connect failed; now waiting to retry
+        await asyncio.wait_for(client.disconnect(), timeout=0.2)
+        with pytest.raises(SeymourConnectionError):
+            await request
         await client.close()

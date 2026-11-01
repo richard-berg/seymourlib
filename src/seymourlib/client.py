@@ -231,47 +231,66 @@ class SeymourClient:
 
         async for attempt in retryer:
             with attempt:
+                # The lock is only held for one attempt, never while waiting
+                # to retry, so other requests, such as a halt, get their turn.
                 async with self._lock:
                     self._raise_if_closed()
-                    # Ensure connection before operation
-                    if not self._connected:
-                        await self._connect_with_retry()
-
-                    # Drain any stale bytes from the buffer before sending.
-                    # This prevents a desynchronised buffer (e.g. from a
-                    # previous timed-out request) from causing the next
-                    # receive() to return the wrong frame.
-                    #
-                    # This is safe because the Seymour protocol does not
-                    # have any unsolicited frames or notifications.
-                    drained = await self.transport.drain_read_buffer()
-                    if drained:
-                        # Whitespace is a line terminator after the previous
-                        # frame, not a sign of a desynchronised stream.
-                        _LOGGER.log(
-                            logging.WARNING if drained.strip() else logging.DEBUG,
-                            "Drained %d stale bytes from buffer before send: %r",
-                            len(drained),
-                            drained[:80],
-                        )
-
-                    # Execute with timeout
-                    async with asyncio.timeout(effective_timeout):
-                        await self.transport.send(frame)
-                        if receive:
-                            response = await (
-                                self.transport.receive()
-                                if until_idle is None
-                                else self.transport.receive_until_idle(until_idle)
-                            )
-                            self._mark_success()
-                            return response
-                        else:
-                            self._mark_success()
-                            return None
+                    try:
+                        return await self._attempt(frame, receive, effective_timeout, until_idle)
+                    except TimeoutError:
+                        raise
+                    except (SeymourTransportError, OSError):
+                        # The connection is broken, so retrying on it can't
+                        # succeed; the next attempt opens a new one.
+                        await self._drop_connection()
+                        raise
 
         # This should never be reached due to retry logic, but satisfy type checker
         return None
+
+    async def _attempt(
+        self,
+        frame: bytes,
+        receive: bool,
+        op_timeout: float,
+        until_idle: float | None,
+    ) -> bytes | None:
+        """Send a frame once, connecting first if needed; the caller holds the lock."""
+        if not self._connected:
+            await self.transport.connect()
+            self._connected = True
+            self._mark_success()
+
+        # Drain any stale bytes from the buffer before sending.
+        # This prevents a desynchronised buffer (e.g. from a
+        # previous timed-out request) from causing the next
+        # receive() to return the wrong frame.
+        #
+        # This is safe because the Seymour protocol does not
+        # have any unsolicited frames or notifications.
+        drained = await self.transport.drain_read_buffer()
+        if drained:
+            # Whitespace is a line terminator after the previous
+            # frame, not a sign of a desynchronised stream.
+            _LOGGER.log(
+                logging.WARNING if drained.strip() else logging.DEBUG,
+                "Drained %d stale bytes from buffer before send: %r",
+                len(drained),
+                drained[:80],
+            )
+
+        async with asyncio.timeout(op_timeout):
+            await self.transport.send(frame)
+            if not receive:
+                self._mark_success()
+                return None
+            response = await (
+                self.transport.receive()
+                if until_idle is None
+                else self.transport.receive_until_idle(until_idle)
+            )
+            self._mark_success()
+            return response
 
     async def _send_and_maybe_receive(
         self,
