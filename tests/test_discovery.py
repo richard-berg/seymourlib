@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+import serialx
 
 from seymourlib import discovery
 from seymourlib.discovery import (
@@ -74,42 +75,93 @@ async def test_enumerate_tcp_transports_returns_unique_hosts(
     assert len(candidates) == 2
     assert {candidate.host for candidate in candidates} == {"192.168.1.7", "192.168.1.8"}
     assert all(candidate.port == ITACH_SERIAL_PORT for candidate in candidates)
+    assert candidates[0].url == f"socket://192.168.1.7:{ITACH_SERIAL_PORT}"
     assert transport.closed
 
 
+def _port_info(device: str, **kwargs: object) -> serialx.SerialPortInfo:
+    fields: dict[str, object] = {
+        "device": device,
+        "resolved_device": device,
+        "vid": None,
+        "pid": None,
+        "serial_number": None,
+        "manufacturer": None,
+        "product": None,
+        "bcd_device": None,
+        "interface_description": None,
+        "interface_num": None,
+        "port_number": None,
+    }
+    fields.update(kwargs)
+    return serialx.SerialPortInfo(**fields)  # type: ignore[arg-type]
+
+
 @pytest.mark.asyncio
-async def test_enumerate_serial_transports_uses_loaded_ports(
+async def test_enumerate_serial_transports_uses_listed_ports(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ports = [
-        SimpleNamespace(device="COM1", description="USB Serial", hwid="ABC"),
-        SimpleNamespace(device="/dev/ttyUSB0", description="USB", hwid="XYZ"),
+        _port_info(
+            "/dev/ttyUSB0",
+            vid=0x0403,
+            pid=0x6001,
+            serial_number="AH05TTD9",
+            product="FT232R USB UART",
+        ),
+        _port_info("COM1", interface_description="Communications Port"),
+        _port_info(""),
     ]
 
-    class DummyListPorts:
-        def comports(self) -> list[SimpleNamespace]:
-            return ports
+    async def _fake_list(**_kwargs: object) -> list[serialx.SerialPortInfo]:
+        return ports
 
-    monkeypatch.setattr(discovery, "_load_serial_list_ports", lambda: DummyListPorts())
+    monkeypatch.setattr(serialx, "async_list_serial_ports", _fake_list)
 
     candidates = await enumerate_serial_transports(baudrate=9600)
 
-    assert len(candidates) == 2
+    assert [candidate.device for candidate in candidates] == ["/dev/ttyUSB0", "COM1"]
     lookup = {candidate.device: candidate for candidate in candidates}
     assert lookup["COM1"].baudrate == 9600
     assert lookup["COM1"].transport.port == "COM1"
-    assert lookup["/dev/ttyUSB0"].transport.port == "/dev/ttyUSB0"
-    assert all(candidate.hardware_id for candidate in lookup.values())
+    assert lookup["COM1"].url == "COM1"
+    assert lookup["COM1"].description == "Communications Port"
+    assert lookup["COM1"].hardware_id == ""
+    usb = lookup["/dev/ttyUSB0"]
+    assert usb.transport.baudrate == 9600
+    assert usb.description == "FT232R USB UART"
+    assert usb.hardware_id == "USB VID:PID=0403:6001 SER=AH05TTD9"
 
 
 @pytest.mark.asyncio
-async def test_enumerate_serial_transports_missing_dependency(
+async def test_enumerate_serial_transports_hardware_id_without_serial(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _raise() -> None:
-        raise DiscoveryError("missing pyserial")
+    async def _fake_list(**_kwargs: object) -> list[serialx.SerialPortInfo]:
+        return [_port_info("/dev/ttyACM0", vid=0x2341, pid=0x0043)]
 
-    monkeypatch.setattr(discovery, "_load_serial_list_ports", _raise)
+    monkeypatch.setattr(serialx, "async_list_serial_ports", _fake_list)
 
-    with pytest.raises(DiscoveryError, match="missing pyserial"):
+    (candidate,) = await enumerate_serial_transports()
+
+    assert candidate.hardware_id == "USB VID:PID=2341:0043"
+    assert candidate.baudrate == SEYMOUR_BAUD_RATE
+
+
+@pytest.mark.asyncio
+async def test_enumerate_serial_transports_os_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _raise(**_kwargs: object) -> list[serialx.SerialPortInfo]:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(serialx, "async_list_serial_ports", _raise)
+
+    with pytest.raises(DiscoveryError, match="denied"):
         await enumerate_serial_transports(SEYMOUR_BAUD_RATE)
+
+
+@pytest.mark.asyncio
+async def test_enumerate_serial_transports_rejects_bad_baudrate() -> None:
+    with pytest.raises(ValueError):
+        await enumerate_serial_transports(0)

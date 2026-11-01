@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "seymourlib"
-version = "0.1.4"
+version = "0.2.0"
 description = "Python client for Seymour masking screens, connected via direct serial or Global Caché iTach IP2SL"
 keywords = ["seymour", "masking", "screen", "serial", "itach", "ip2sl", "home-assistant"]
 authors = [{name = "Richard Berg", email = "ars@richardberg.net"}]
@@ -14,6 +14,8 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
 ]
 license = "MIT"
@@ -21,10 +23,9 @@ license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "anyio>=3.4",
     "attrs>=25.4.0",
+    "serialx>=1.15",
     "tenacity>=8.0",
-    "async-typer>=0.1.10",
 ]
 
 [project.urls]
@@ -34,9 +35,14 @@ issues = "https://github.com/richard-berg/seymourlib/issues"
 
 
 [project.optional-dependencies]
-serial = [
-    "pyserial_asyncio>=0.6",
+# Dependencies for the `seymourctl` command-line tool.
+cli = [
+    "async-typer>=0.1.10",
+    "rich>=10.11.0",
+    "typer>=0.9.0",
 ]
+# Serial support is built in since 0.2.0; kept so `seymourlib[serial]` still resolves.
+serial = []
 
 [dependency-groups]
 test = [
@@ -44,7 +50,6 @@ test = [
     "pytest-asyncio>=0.23",
     "pytest-timeout>=2",
     "coverage>=7",
-    "pyserial_asyncio>=0.6",
     "pytest-cov>=7.0.0",
 ]
 lint = [
@@ -55,6 +60,7 @@ typecheck = [
     "types-setuptools",
 ]
 dev = [
+    "seymourlib[cli]",
     { include-group = "lint" },
     { include-group = "test" },
     { include-group = "typecheck" },
