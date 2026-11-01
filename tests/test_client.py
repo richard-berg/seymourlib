@@ -463,7 +463,7 @@ class TestSeymourClientOperations:
         sent unexpected data.  The client should remain connected so that
         subsequent operations can succeed without a needless reconnect.
         """
-        transport.send_mock.side_effect = ValueError("Protocol error")
+        transport.send_mock.side_effect = SeymourProtocolError("Protocol error")
         await client.connect()
 
         with pytest.raises(SeymourProtocolError):
@@ -471,6 +471,20 @@ class TestSeymourClientOperations:
 
         # Connection should stay up — only transport errors disconnect.
         assert client.is_connected
+
+    @pytest.mark.asyncio
+    async def test_send_and_maybe_receive_unexpected_error(
+        self, client: SeymourClient, transport: MockTransport
+    ) -> None:
+        """An unexpected error says nothing about the connection, so it's reset."""
+        transport.send_mock.side_effect = ValueError("Unexpected")
+        await client.connect()
+
+        with pytest.raises(SeymourConnectionError):
+            await client._send_and_maybe_receive(b"[frame]")
+
+        assert not client.is_connected
+        transport.close_mock.assert_called_once()
 
 
 class TestSeymourClientPublicAPI:

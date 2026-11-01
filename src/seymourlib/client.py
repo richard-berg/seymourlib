@@ -244,6 +244,13 @@ class SeymourClient:
                         # succeed; the next attempt opens a new one.
                         await self._drop_connection()
                         raise
+                    except SeymourProtocolError:
+                        raise
+                    except Exception:
+                        # Nothing is known about the state of the connection
+                        # after an unexpected error, so don't trust it again.
+                        await self._drop_connection()
+                        raise
 
         # This should never be reached due to retry logic, but satisfy type checker
         return None
@@ -324,7 +331,7 @@ class SeymourClient:
             # unexpected frame.  Re-raise without touching _connected.
             raise
         except Exception as exc:
-            raise SeymourProtocolError("Protocol or unexpected error") from exc
+            raise SeymourConnectionError("Unexpected error; the connection was reset") from exc
 
     async def _send(self, frame: bytes) -> None:
         """Low-level: send frame without awaiting reply."""

@@ -301,3 +301,30 @@ class TestRetriesReconnect:
         with pytest.raises(SeymourConnectionError):
             await request
         await client.close()
+
+
+class TestUnexpectedErrors:
+    async def test_unexpected_error_resets_the_connection(
+        self, ip2sl: FakeIP2SL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = make_client(ip2sl)
+        await client.get_status()
+        real_send = client.transport.send
+        calls = 0
+
+        async def broken_send(data: bytes) -> None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise AssertionError("transport in a bad state")
+            await real_send(data)
+
+        monkeypatch.setattr(client.transport, "send", broken_send)
+        with pytest.raises(SeymourConnectionError) as exc_info:
+            await client.get_status()
+        assert isinstance(exc_info.value.__cause__, AssertionError)
+        assert not client.is_connected
+        # The next request starts over on a new connection
+        assert (await client.get_status()).ratio is not None
+        assert ip2sl.connections == 2
+        await client.close()
