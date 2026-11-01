@@ -660,12 +660,11 @@ class TestEdgeCasesAndErrorHandling:
         original_writer = transport.writer
         assert original_writer is not None
 
-        # Test that close raises when writer.close() fails but still cleans up
+        # Closing is best-effort: a failing close() is swallowed and the
+        # connection aborted, so cleanup paths never raise
         with patch.object(original_writer, "close", side_effect=Exception("Close failed")):
-            # This should raise an exception but cleanup should still happen via finally
-            with pytest.raises(Exception, match="Close failed"):
-                await transport.close()
+            await transport.close()
 
-        # Verify cleanup still occurred despite the exception
+        original_writer.transport.abort.assert_called_once()
         assert transport.reader is None
         assert transport.writer is None

@@ -9,15 +9,19 @@ and ESPHome serial proxies.
 from __future__ import annotations
 
 import asyncio
+import logging
 from abc import abstractmethod
 
 import serialx
 
 from .exceptions import SeymourTransportError
 
+_LOGGER = logging.getLogger(__name__)
+
 SEYMOUR_BAUD_RATE = 115200
 ITACH_SERIAL_PORT = 4999
 DEFAULT_CONNECT_TIMEOUT = 10.0
+CLOSE_TIMEOUT = 2.0
 
 
 def tcp_url(host: str, port: int = ITACH_SERIAL_PORT) -> str:
@@ -39,13 +43,27 @@ class SeymourTransport:
         raise NotImplementedError
 
     async def close(self) -> None:
+        """Close the connection; never raises, and never takes long.
+
+        Closing is cleanup, so it must not fail just because the connection
+        already broke: ``wait_closed()`` re-raises the error that ended the
+        connection, such as a reset by the IP2SL.  A peer that stops reading
+        could also stall the close while unsent bytes drain, so the wait is
+        bounded and the connection aborted when it runs out.
+        """
+        writer, self.writer, self.reader = self.writer, None, None
+        if writer is None:
+            return
         try:
-            if self.writer:
-                self.writer.close()
-                await self.writer.wait_closed()
-        finally:
-            self.writer = None
-            self.reader = None
+            writer.close()
+            async with asyncio.timeout(CLOSE_TIMEOUT):
+                await writer.wait_closed()
+        except TimeoutError:
+            _LOGGER.debug("Timed out closing the connection; aborting it")
+            writer.transport.abort()
+        except Exception as exc:  # noqa: BLE001 - closing is best-effort
+            _LOGGER.debug("Ignoring error while closing the connection: %r", exc)
+            writer.transport.abort()
 
     async def send(self, data: bytes) -> None:
         """Send one data frame to transport, blocking until the complete frame is sent."""
