@@ -3,6 +3,7 @@
 # mypy: disable-error-code="unreachable"
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -104,11 +105,12 @@ class TestSeymourClient:
         assert stats["last_successful_operation"] == 0.0
         assert stats["time_since_last_success"] == -1
 
-    @patch("time.time")
+    @patch("time.monotonic")
     def test_connection_stats_after_operation(self, mock_time: Mock, client: SeymourClient) -> None:
         """Test connection stats after successful operation."""
         mock_time.return_value = 1000.0
         client._last_successful_operation = 950.0
+        client._last_success_monotonic = 950.0
 
         stats = client.connection_stats
         assert stats["last_successful_operation"] == 950.0
@@ -307,13 +309,12 @@ class TestSeymourClientHealthMonitoring:
         await client.close()
 
     @pytest.mark.asyncio
-    @patch("seymourlib.client.time.time")
     async def test_health_check_skip_recent_operation(
-        self, mock_time: Mock, client: SeymourClient, transport: MockTransport
+        self, client: SeymourClient, transport: MockTransport
     ) -> None:
         """Test health check skipped when recent successful operation."""
-        mock_time.return_value = 1000.0
-        client._last_successful_operation = 999.9  # Very recent
+        # Patching time.monotonic would stop the event loop's clock
+        client._last_success_monotonic = time.monotonic() + 1000  # Very recent
 
         # Mock get_status to track if it's called
         with patch.object(client, "get_status", new_callable=AsyncMock) as mock_get_status:
@@ -823,7 +824,7 @@ class TestSeymourClientEdgeCases:
         transport.receive_mock.return_value = b"[01P]"
 
         await client.connect()
-        client._last_successful_operation = 0.0  # Force health checks
+        client._last_success_monotonic = None  # Force health checks
 
         transport.send_mock.side_effect = failing_send
 

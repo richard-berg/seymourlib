@@ -193,3 +193,26 @@ class TestDiagnostics:
         await asyncio.sleep(0.1)
         assert await transport.receive_until_idle(5) == b"[01@x]"
         await transport.close()
+
+
+class TestLogging:
+    async def test_frames_are_logged_to_the_library_logger(
+        self, ip2sl: FakeIP2SL, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.DEBUG)
+        client = make_client(ip2sl)
+        await client.get_status()
+        await client.close()
+        frame_records = [r for r in caplog.records if "frame" in r.getMessage()]
+        assert frame_records
+        assert {r.name for r in frame_records} == {"seymourlib.client"}
+
+    async def test_time_since_last_success_ignores_wall_clock_jumps(
+        self, ip2sl: FakeIP2SL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = make_client(ip2sl)
+        await client.get_status()
+        # NTP steps the wall clock back an hour
+        monkeypatch.setattr(time, "time", lambda: client._last_successful_operation - 3600)
+        assert 0 <= client.connection_stats["time_since_last_success"] < 5
+        await client.close()

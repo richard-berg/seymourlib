@@ -46,7 +46,9 @@ class SeymourClient:
         self._connected = False
         self.max_retries = max_retries
         self.request_timeout = request_timeout
+        # Wall clock time for display, monotonic time for intervals
         self._last_successful_operation = 0.0
+        self._last_success_monotonic: float | None = None
         self._health_check_task: asyncio.Task[None] | None = None
 
     async def _connect_with_retry(self) -> None:
@@ -63,7 +65,7 @@ class SeymourClient:
             with attempt:
                 await self.transport.connect()
                 self._connected = True
-                self._last_successful_operation = time.time()
+                self._mark_success()
 
     async def connect(self) -> None:
         async with self._lock:
@@ -112,7 +114,10 @@ class SeymourClient:
                 await asyncio.sleep(interval)
 
                 # Skip health check if we've had recent successful operations
-                if time.time() - self._last_successful_operation < interval / 2:
+                if (
+                    self._last_success_monotonic is not None
+                    and time.monotonic() - self._last_success_monotonic < interval / 2
+                ):
                     continue
 
                 # Perform lightweight health check
@@ -137,6 +142,10 @@ class SeymourClient:
         raw = await self._send_and_receive(protocol.encode_status(), op_timeout=hc_timeout)
         protocol.decode_status(raw)
 
+    def _mark_success(self) -> None:
+        self._last_successful_operation = time.time()
+        self._last_success_monotonic = time.monotonic()
+
     @property
     def is_connected(self) -> bool:
         """Check if the client believes it's connected."""
@@ -148,8 +157,8 @@ class SeymourClient:
         return {
             "last_successful_operation": self._last_successful_operation,
             "time_since_last_success": (
-                time.time() - self._last_successful_operation
-                if self._last_successful_operation > 0
+                time.monotonic() - self._last_success_monotonic
+                if self._last_success_monotonic is not None
                 else -1
             ),
         }
@@ -226,10 +235,10 @@ class SeymourClient:
                                 if until_idle is None
                                 else self.transport.receive_until_idle(until_idle)
                             )
-                            self._last_successful_operation = time.time()
+                            self._mark_success()
                             return response
                         else:
-                            self._last_successful_operation = time.time()
+                            self._mark_success()
                             return None
 
         # This should never be reached due to retry logic, but satisfy type checker
@@ -244,7 +253,7 @@ class SeymourClient:
     ) -> bytes | None:
         """Send frame and optionally receive response with automatic reconnection."""
         try:
-            logging.debug("Sending frame: %s", frame)
+            _LOGGER.debug("Sending frame: %s", frame)
             return await self._execute_operation(
                 frame, receive, op_timeout=op_timeout, until_idle=until_idle
             )
@@ -281,7 +290,7 @@ class SeymourClient:
         raw = await self._send_and_maybe_receive(
             frame, receive=True, op_timeout=op_timeout, until_idle=until_idle
         )
-        logging.debug("Received frame: %s", raw)
+        _LOGGER.debug("Received frame: %s", raw)
         assert raw is not None
         return raw
 
