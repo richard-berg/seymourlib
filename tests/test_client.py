@@ -198,7 +198,8 @@ class TestSeymourClientConnection:
         await client.close()
 
         assert not client.is_connected
-        transport.close_mock.assert_not_called()
+        # Closing is safe to repeat and releases anything left open
+        transport.close_mock.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_close_with_health_monitoring(

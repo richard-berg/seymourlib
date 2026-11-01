@@ -1,14 +1,30 @@
-"""Transport abstraction: TCPTransport (for IP2SL) + SerialTransport (local serial)."""
+"""Transport abstraction for Seymour controllers.
+
+Every concrete transport is URL-based and opened with `serialx`, so any URL it
+understands works: local devices (``/dev/ttyUSB0``, ``COM5``), raw TCP bridges
+such as the Global Caché iTach IP2SL (``socket://host:4999``), RFC 2217 servers
+and ESPHome serial proxies.
+"""
 
 from __future__ import annotations
 
 import asyncio
 from abc import abstractmethod
 
+import serialx
+
 from .exceptions import SeymourTransportError
 
 SEYMOUR_BAUD_RATE = 115200
 ITACH_SERIAL_PORT = 4999
+DEFAULT_CONNECT_TIMEOUT = 10.0
+
+
+def tcp_url(host: str, port: int = ITACH_SERIAL_PORT) -> str:
+    """Return the ``socket://`` URL for a raw TCP serial bridge such as the IP2SL."""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return f"socket://{host}:{port}"
 
 
 class SeymourTransport:
@@ -83,33 +99,58 @@ class SeymourTransport:
         return drained
 
 
-class TCPTransport(SeymourTransport):
-    def __init__(self, host: str, port: int = ITACH_SERIAL_PORT) -> None:
+class URLTransport(SeymourTransport):
+    """Transport for any serial URL supported by serialx."""
+
+    def __init__(
+        self,
+        url: str,
+        baudrate: int = SEYMOUR_BAUD_RATE,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> None:
         super().__init__()
+        self.url = url
+        self.baudrate = baudrate
+        self.connect_timeout = connect_timeout
+
+    def __repr__(self) -> str:
+        return f"{type(self).__name__}(url={serialx.redact_uri(self.url)!r})"
+
+    async def connect(self) -> None:
+        # Close any existing connection first.  The IP2SL only accepts one
+        # TCP connection per serial port, so a leaked socket would hold that
+        # slot and block every future connect.
+        await self.close()
+        # A busy IP2SL slot can accept the TCP handshake and then never
+        # respond, so bound the whole open with a timeout.
+        async with asyncio.timeout(self.connect_timeout):
+            self.reader, self.writer = await serialx.open_serial_connection(
+                url=self.url, baudrate=self.baudrate
+            )
+
+
+class TCPTransport(URLTransport):
+    """Transport for a raw TCP serial bridge such as the Global Caché iTach IP2SL."""
+
+    def __init__(
+        self,
+        host: str,
+        port: int = ITACH_SERIAL_PORT,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> None:
+        super().__init__(tcp_url(host, port), connect_timeout=connect_timeout)
         self.host = host
         self.port = port
 
-    async def connect(self) -> None:
-        # Close any existing connection first to avoid leaking the TCP
-        # socket.  The IP2SL only accepts one connection per serial port;
-        # a leaked socket holds that slot and blocks all future connects.
-        await self.close()
-        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
 
+class SerialTransport(URLTransport):
+    """Transport for a local serial device, e.g. ``/dev/ttyUSB0`` or ``COM5``."""
 
-class SerialTransport(SeymourTransport):
-    def __init__(self, port: str, baudrate: int = SEYMOUR_BAUD_RATE) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = SEYMOUR_BAUD_RATE,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+    ) -> None:
+        super().__init__(port, baudrate, connect_timeout)
         self.port = port
-        self.baudrate = baudrate
-
-    async def connect(self) -> None:
-        await self.close()
-        try:
-            import serial_asyncio
-        except Exception as exc:
-            raise SeymourTransportError("serial_asyncio not installed") from exc
-
-        self.reader, self.writer = await serial_asyncio.open_serial_connection(
-            url=self.port, baudrate=self.baudrate
-        )

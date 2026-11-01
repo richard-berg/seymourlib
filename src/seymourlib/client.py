@@ -85,10 +85,14 @@ class SeymourClient:
                     pass
                 self._health_check_task = None
 
-            # Close transport
-            if self._connected:
-                await self.transport.close()
-                self._connected = False
+            # Always close the transport: a failed request clears _connected
+            # but leaves the socket open, and an IP2SL only accepts one
+            # connection per serial port, so a leaked socket blocks every
+            # later connect.  Closing an already-closed transport is a no-op.
+            was_connected = self._connected
+            self._connected = False
+            await self.transport.close()
+            if was_connected:
                 _LOGGER.info("Closed Seymour transport")
 
     async def start_health_monitoring(self, interval: float = HEALTH_CHECK_INTERVAL) -> None:

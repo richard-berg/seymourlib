@@ -6,10 +6,16 @@ import time
 from typing import Annotated
 
 import attrs
-import typer
-from async_typer import AsyncTyper
-from rich import print as rprint
-from rich.table import Table
+
+try:
+    import typer
+    from async_typer import AsyncTyper
+    from rich import print as rprint
+    from rich.table import Table
+except ImportError as exc:  # pragma: no cover - depends on optional extra
+    raise SystemExit(
+        "seymourctl needs the CLI extra; install it with: pip install 'seymourlib[cli]'"
+    ) from exc
 
 from seymourlib.protocol import DiagnosticOption, MotorID, MovementCode, Ratio, StatusCode
 
@@ -40,6 +46,7 @@ class GlobalOptions:
     host: str
     port: int
     serial_port: str | None
+    url: str | None = None
 
 
 _GLOBAL_OPTIONS: GlobalOptions | None = None
@@ -82,9 +89,23 @@ def handle_global_options(
             envvar="SEYMOUR_SERIAL_PORT",
         ),
     ] = None,
+    url: Annotated[
+        str | None,
+        typer.Option(
+            "--url",
+            "-u",
+            help=(
+                "Any serialx URL, e.g. socket://host:4999 or esphome://host:6053/?port_name=X "
+                "(overrides all other transport options)."
+            ),
+            envvar="SEYMOUR_URL",
+        ),
+    ] = None,
 ) -> None:
     global _GLOBAL_OPTIONS
-    _GLOBAL_OPTIONS = GlobalOptions(verbose=verbose, host=host, port=port, serial_port=serial_port)
+    _GLOBAL_OPTIONS = GlobalOptions(
+        verbose=verbose, host=host, port=port, serial_port=serial_port, url=url
+    )
     if verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -93,10 +114,15 @@ def handle_global_options(
 
 def _get_client() -> SeymourClient:
     assert _GLOBAL_OPTIONS is not None
-    if _GLOBAL_OPTIONS.serial_port:
+    transport: SeymourTransport
+    if _GLOBAL_OPTIONS.url:
+        from .transport import URLTransport
+
+        transport = URLTransport(_GLOBAL_OPTIONS.url)
+    elif _GLOBAL_OPTIONS.serial_port:
         from .transport import SerialTransport
 
-        transport: SeymourTransport = SerialTransport(_GLOBAL_OPTIONS.serial_port)
+        transport = SerialTransport(_GLOBAL_OPTIONS.serial_port)
     else:
         from .transport import TCPTransport
 

@@ -11,12 +11,12 @@ Python client for Seymour masking screens, connected via direct serial or Global
 
 ## Highlights
 
-- Async-first client and transport abstractions (TCP/IP2SL vs native serial) with consistent APIs.
+- Async-first client with a single URL-based transport built on [`serialx`](https://github.com/puddly/serialx): local serial ports, Global Caché IP2SL (`socket://`), RFC 2217 and ESPHome serial proxies all work the same way.
 - Protocol helpers that mirror the official Seymour RS232 spec, including parsing/validation utilities.
 - `seymourctl` CLI for one-off commands, scripting, and smoke tests in CI.
 - Zero-config Global Caché IP2SL and serial-port discovery via async helpers and CLI subcommands.
 - Movement/preset commands poll controller status and return only once the motors report HALTED/STOPPED, so scripts never race ahead.
-- Batteries-included retry logic (`tenacity`), timeout handling, and graceful cancellation via `anyio`.
+- Batteries-included retry logic (`tenacity`), connect/request timeouts, and graceful cancellation.
 
 ## Architecture at a Glance
 
@@ -40,7 +40,7 @@ flowchart TB
 ### Quick install (recommended)
 
 ```bash
-uv tool install --python 3.11 "seymourlib[serial]"
+uv tool install --python 3.11 "seymourlib[cli]"
 ```
 
 - This pulls the published wheel straight from [PyPI](https://pypi.org/project/seymourlib/) and drops a `seymourctl` executable anywhere on your `PATH`.
@@ -51,20 +51,20 @@ uv tool install --python 3.11 "seymourlib[serial]"
 Already have a project venv or `uv` workspace? Install directly:
 
 ```bash
-uv add "seymourlib[serial]"
+uv add seymourlib
 ```
 
 This will update your project's dependencies, install the latest source distribution of `seymourlib`, and update whatever lockfiles your project may use.
 
-> 💡 The optional `serial` extra pulls in `pyserial-asyncio` so the same client works over USB/RS232 without the IP bridge.  If you want to trim
-your project's dependency graph and **never** plan to talk over direct RS232, you can skip it.
+> 💡 Serial support is built in (via `serialx`) since 0.2.0. The `cli` extra adds the dependencies for `seymourctl`;
+> library users don't need it. The old `serial` extra is still accepted but no longer installs anything.
 
 ### Classic pip fallback
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate  # or .venv\Scripts\activate on Windows
-pip install "seymourlib[serial]"
+pip install "seymourlib[cli]"
 ```
 
 ---
@@ -84,8 +84,9 @@ To debug, contribute code, or run the full test suite:
     - Confirm straight-through RS232 between IP2SL and the Seymour control port.
     - For direct USB serial, a FTDI-based adapter keeps timing stable.
 4. **Pick your transport**
-    - `TCPTransport(host, port=4999)` for IP2SL.
-    - `SerialTransport(port="COM5")` for direct connection (requires `[serial]`).
+    - `TCPTransport(host, port=4999)` for IP2SL (equivalent to `URLTransport("socket://host:4999")`).
+    - `SerialTransport(port="COM5")` or `SerialTransport(port="/dev/ttyUSB0")` for direct connection.
+    - `URLTransport(url)` for any other [`serialx` URL](https://puddly.github.io/serialx/), such as an ESPHome serial proxy.
 
 ---
 
@@ -111,6 +112,8 @@ asyncio.run(main())
 ```bash
 seymourctl --host 192.168.1.70 status
 seymourctl --host 192.168.1.70 preset apply 235
+seymourctl --serial-port /dev/ttyUSB0 status
+seymourctl --url "esphome://proxy.local:6053/?port_name=Seymour" status
 seymourctl --help
 ```
 

@@ -3,17 +3,22 @@
 # mypy: disable-error-code="unreachable"
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+import serialx
 
-from seymourlib.exceptions import SeymourTransportError
+from seymourlib.client import SeymourClient
+from seymourlib.exceptions import SeymourConnectionError, SeymourTransportError
 from seymourlib.transport import (
+    DEFAULT_CONNECT_TIMEOUT,
     ITACH_SERIAL_PORT,
     SEYMOUR_BAUD_RATE,
     SerialTransport,
     SeymourTransport,
     TCPTransport,
+    URLTransport,
+    tcp_url,
 )
 
 
@@ -179,6 +184,129 @@ class TestSeymourTransportBase:
             await transport.receive()
 
 
+OPEN_SERIAL = "seymourlib.transport.serialx.open_serial_connection"
+
+
+def _mock_streams() -> tuple[AsyncMock, AsyncMock]:
+    return AsyncMock(spec=asyncio.StreamReader), AsyncMock(spec=asyncio.StreamWriter)
+
+
+class TestTcpUrl:
+    """Test building socket:// URLs for TCP bridges."""
+
+    def test_ipv4(self) -> None:
+        assert tcp_url("192.168.1.70") == f"socket://192.168.1.70:{ITACH_SERIAL_PORT}"
+
+    def test_hostname_and_port(self) -> None:
+        assert tcp_url("ip2sl.local", 5000) == "socket://ip2sl.local:5000"
+
+    def test_ipv6_is_bracketed(self) -> None:
+        assert tcp_url("fe80::1", 4999) == "socket://[fe80::1]:4999"
+        assert tcp_url("[fe80::1]", 4999) == "socket://[fe80::1]:4999"
+
+
+class TestURLTransport:
+    """Test the generic URL-based transport."""
+
+    def test_initialization(self) -> None:
+        transport = URLTransport("esphome://proxy.local:6053/?port_name=Seymour")
+
+        assert transport.url == "esphome://proxy.local:6053/?port_name=Seymour"
+        assert transport.baudrate == SEYMOUR_BAUD_RATE
+        assert transport.connect_timeout == DEFAULT_CONNECT_TIMEOUT
+        assert transport.reader is None
+        assert transport.writer is None
+
+    def test_repr_redacts_credentials(self) -> None:
+        transport = URLTransport("esphome://proxy.local:6053/?port_name=Seymour&noise_psk=secret")
+
+        assert "secret" not in repr(transport)
+        assert repr(transport).startswith("URLTransport(url=")
+
+    @pytest.mark.asyncio
+    async def test_connect_passes_url_and_baudrate(self) -> None:
+        transport = URLTransport("socket://host:4999", baudrate=9600)
+        reader, writer = _mock_streams()
+
+        with patch(OPEN_SERIAL, AsyncMock(return_value=(reader, writer))) as mock_open:
+            await transport.connect()
+
+        mock_open.assert_awaited_once_with(url="socket://host:4999", baudrate=9600)
+        assert transport.reader is reader
+        assert transport.writer is writer
+
+    @pytest.mark.asyncio
+    async def test_connect_timeout(self) -> None:
+        transport = URLTransport("socket://host:4999", connect_timeout=0.01)
+
+        async def _hang(**_kwargs: object) -> None:
+            await asyncio.sleep(10)
+
+        with patch(OPEN_SERIAL, _hang):
+            with pytest.raises(TimeoutError):
+                await transport.connect()
+
+        assert transport.reader is None
+        assert transport.writer is None
+
+    @pytest.mark.asyncio
+    async def test_connect_against_real_socket(self) -> None:
+        """Exercise serialx's socket:// handler end-to-end with a local server."""
+
+        async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            request = await reader.readuntil(b"]")
+            writer.write(b"[01" + request[1:])
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        transport = TCPTransport("127.0.0.1", port)
+        try:
+            await transport.connect()
+            await transport.send(b"[ping]")
+            assert await transport.receive() == b"[01ping]"
+        finally:
+            await transport.close()
+            server.close()
+            await server.wait_closed()
+
+
+class TestClientReleasesSocket:
+    """Regression tests for releasing the single IP2SL connection slot."""
+
+    @pytest.mark.asyncio
+    async def test_close_after_failed_request_closes_socket(self) -> None:
+        """A request timeout must not leave the socket open after close()."""
+        closed = asyncio.Event()
+
+        async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            # Accept the connection but never answer, like a busy or wrong port
+            await reader.read()
+            closed.set()
+            writer.close()
+
+        server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        client = SeymourClient(
+            URLTransport(f"socket://127.0.0.1:{port}", connect_timeout=2),
+            max_retries=1,
+            request_timeout=0.2,
+        )
+        try:
+            await client.connect()
+            with pytest.raises(SeymourConnectionError):
+                await client.get_status()
+            assert not client.is_connected
+
+            await client.close()
+
+            await asyncio.wait_for(closed.wait(), timeout=2)
+        finally:
+            server.close()
+            await server.wait_closed()
+
+
 class TestTCPTransport:
     """Test the TCPTransport implementation."""
 
@@ -188,6 +316,7 @@ class TestTCPTransport:
 
         assert transport.host == "localhost"
         assert transport.port == 8080
+        assert transport.url == "socket://localhost:8080"
         assert transport.reader is None
         assert transport.writer is None
 
@@ -197,36 +326,30 @@ class TestTCPTransport:
 
         assert transport.host == "192.168.1.100"
         assert transport.port == ITACH_SERIAL_PORT
-        assert transport.reader is None
-        assert transport.writer is None
+        assert transport.url == f"socket://192.168.1.100:{ITACH_SERIAL_PORT}"
 
     @pytest.mark.asyncio
     async def test_connect_success(self) -> None:
         """Test successful TCP connection."""
         transport = TCPTransport("localhost", 8080)
+        reader, writer = _mock_streams()
 
-        mock_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
-
-        with patch("asyncio.open_connection") as mock_open:
-            mock_open.return_value = (mock_reader, mock_writer)
-
+        with patch(OPEN_SERIAL, AsyncMock(return_value=(reader, writer))) as mock_open:
             await transport.connect()
 
-            mock_open.assert_called_once_with("localhost", 8080)
-            assert transport.reader is mock_reader
-            assert transport.writer is mock_writer
-
-            await transport.close()
+        mock_open.assert_awaited_once_with(
+            url="socket://localhost:8080", baudrate=SEYMOUR_BAUD_RATE
+        )
+        assert transport.reader is reader
+        assert transport.writer is writer
+        await transport.close()
 
     @pytest.mark.asyncio
     async def test_connect_failure(self) -> None:
         """Test TCP connection failure."""
         transport = TCPTransport("invalid_host", 8080)
 
-        with patch("asyncio.open_connection") as mock_open:
-            mock_open.side_effect = OSError("Connection failed")
-
+        with patch(OPEN_SERIAL, AsyncMock(side_effect=OSError("Connection failed"))):
             with pytest.raises(OSError, match="Connection failed"):
                 await transport.connect()
 
@@ -238,33 +361,22 @@ class TestTCPTransport:
     async def test_full_tcp_workflow(self) -> None:
         """Test complete TCP transport workflow."""
         transport = TCPTransport("localhost", 8080)
+        reader, writer = _mock_streams()
+        reader.readuntil.return_value = b"[response]"
 
-        mock_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
-
-        # Configure mock behaviors
-        mock_reader.readuntil.return_value = b"[response]"
-
-        with patch("asyncio.open_connection") as mock_open:
-            mock_open.return_value = (mock_reader, mock_writer)
-
-            # Connect
+        with patch(OPEN_SERIAL, AsyncMock(return_value=(reader, writer))):
             await transport.connect()
 
-            # Send data
-            await transport.send(b"[request]")
-            mock_writer.write.assert_called_once_with(b"[request]")
-            mock_writer.drain.assert_called_once()
+        await transport.send(b"[request]")
+        writer.write.assert_called_once_with(b"[request]")
+        writer.drain.assert_called_once()
 
-            # Receive data
-            response = await transport.receive()
-            assert response == b"[response]"
-            mock_reader.readuntil.assert_called_once_with(b"]")
+        assert await transport.receive() == b"[response]"
+        reader.readuntil.assert_called_once_with(b"]")
 
-            # Close connection
-            await transport.close()
-            mock_writer.close.assert_called_once()
-            mock_writer.wait_closed.assert_called_once()
+        await transport.close()
+        writer.close.assert_called_once()
+        writer.wait_closed.assert_called_once()
 
 
 class TestSerialTransport:
@@ -275,6 +387,7 @@ class TestSerialTransport:
         transport = SerialTransport("/dev/ttyUSB0", 9600)
 
         assert transport.port == "/dev/ttyUSB0"
+        assert transport.url == "/dev/ttyUSB0"
         assert transport.baudrate == 9600
         assert transport.reader is None
         assert transport.writer is None
@@ -285,106 +398,41 @@ class TestSerialTransport:
 
         assert transport.port == "COM3"
         assert transport.baudrate == SEYMOUR_BAUD_RATE
-        assert transport.reader is None
-        assert transport.writer is None
 
     @pytest.mark.asyncio
     async def test_connect_success(self) -> None:
         """Test successful serial connection."""
         transport = SerialTransport("/dev/ttyUSB0", 9600)
+        reader, writer = _mock_streams()
 
-        mock_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
-
-        mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(
-            return_value=(mock_reader, mock_writer)
-        )
-
-        with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
+        with patch(OPEN_SERIAL, AsyncMock(return_value=(reader, writer))) as mock_open:
             await transport.connect()
 
-            mock_serial_asyncio.open_serial_connection.assert_called_once_with(
-                url="/dev/ttyUSB0", baudrate=9600
-            )
-            assert transport.reader is mock_reader
-            assert transport.writer is mock_writer
+        mock_open.assert_awaited_once_with(url="/dev/ttyUSB0", baudrate=9600)
+        assert transport.reader is reader
+        assert transport.writer is writer
 
     @pytest.mark.asyncio
-    async def test_connect_missing_serial_asyncio(self) -> None:
-        """Test connection failure when serial_asyncio is not available."""
-        transport = SerialTransport("/dev/ttyUSB0")
+    async def test_connect_missing_device(self) -> None:
+        """Test that a missing device raises a retryable OSError."""
+        transport = SerialTransport("/dev/does-not-exist")
 
-        # Simulate import error by removing the module
-        with patch.dict("sys.modules", {"serial_asyncio": None}):
-            with patch("builtins.__import__") as mock_import:
-                mock_import.side_effect = ImportError("No module named 'serial_asyncio'")
-
-                with pytest.raises(SeymourTransportError, match="serial_asyncio not installed"):
-                    await transport.connect()
+        with pytest.raises(FileNotFoundError):
+            await transport.connect()
 
         assert transport.reader is None
         assert transport.writer is None
-        await transport.close()
 
     @pytest.mark.asyncio
-    async def test_connect_serial_exception(self) -> None:
-        """Test handling of serial connection exceptions."""
-        transport = SerialTransport("/dev/ttyUSB0")
+    async def test_connect_unknown_scheme(self) -> None:
+        """Test that an unsupported URL scheme is reported by serialx."""
+        transport = SerialTransport("bogus://device")
 
-        mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(
-            side_effect=Exception("Serial port error")
-        )
-
-        with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
-            # The open_serial_connection exception is not wrapped, so it propagates directly
-            with pytest.raises(Exception, match="Serial port error"):
-                await transport.connect()
+        with pytest.raises(serialx.SerialException):
+            await transport.connect()
 
         assert transport.reader is None
         assert transport.writer is None
-        await transport.close()
-
-    @pytest.mark.asyncio
-    async def test_full_serial_workflow(self) -> None:
-        """Test complete serial transport workflow."""
-        transport = SerialTransport("COM3", SEYMOUR_BAUD_RATE)
-
-        mock_reader = AsyncMock(spec=asyncio.StreamReader)
-        mock_writer = AsyncMock(spec=asyncio.StreamWriter)
-
-        # Configure mock behaviors
-        mock_reader.readuntil.return_value = b"[serial_response]"
-
-        mock_serial_asyncio = Mock()
-        mock_serial_asyncio.open_serial_connection = AsyncMock(
-            return_value=(mock_reader, mock_writer)
-        )
-
-        with patch.dict("sys.modules", {"serial_asyncio": mock_serial_asyncio}):
-            # Connect
-            await transport.connect()
-
-            # Verify connection parameters
-            mock_serial_asyncio.open_serial_connection.assert_called_once_with(
-                url="COM3", baudrate=SEYMOUR_BAUD_RATE
-            )
-
-            # Send data
-            await transport.send(b"[serial_request]")
-            mock_writer.write.assert_called_once_with(b"[serial_request]")
-            mock_writer.drain.assert_called_once()
-
-            # Receive data
-            response = await transport.receive()
-            assert response == b"[serial_response]"
-            mock_reader.readuntil.assert_called_once_with(b"]")
-
-            # Close connection
-            await transport.close()
-            mock_writer.close.assert_called_once()
-            mock_writer.wait_closed.assert_called_once()
 
 
 class TestEdgeCasesAndErrorHandling:
@@ -400,7 +448,7 @@ class TestEdgeCasesAndErrorHandling:
         mock_reader2 = AsyncMock(spec=asyncio.StreamReader)
         mock_writer2 = AsyncMock(spec=asyncio.StreamWriter)
 
-        with patch("asyncio.open_connection") as mock_open:
+        with patch(OPEN_SERIAL, AsyncMock()) as mock_open:
             # First connection
             mock_open.return_value = (mock_reader1, mock_writer1)
             await transport.connect()

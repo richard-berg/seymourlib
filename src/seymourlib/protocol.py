@@ -113,7 +113,10 @@ class Serial:
     production_number: str
 
     def to_serial_number(self) -> str:
-        return f"{self.model_code}-{self.month:02d}{self.year:02d}-{self.production_number}"
+        """Return the serial number as a string, without the protocol's space padding."""
+        return (
+            f"{self.model_code}-{self.month:02d}{self.year:02d}-{self.production_number}"
+        ).rstrip()
 
     PARSER_RE = re.compile(
         rb"(?P<model_code>.{2})-(?P<month>[0-9]{2})(?P<year>[0-9]{2})-(?P<production_number>.{5})"

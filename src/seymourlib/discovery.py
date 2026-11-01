@@ -6,7 +6,8 @@ import asyncio
 import socket
 import struct
 from dataclasses import dataclass
-from typing import Any
+
+import serialx
 
 from .transport import ITACH_SERIAL_PORT, SEYMOUR_BAUD_RATE, SerialTransport, TCPTransport
 
@@ -38,6 +39,11 @@ class TCPTransportCandidate:
     metadata: dict[str, str]
     raw_beacon: str
 
+    @property
+    def url(self) -> str:
+        """Return the serial URL for this bridge, e.g. ``socket://host:4999``."""
+        return self.transport.url
+
 
 @dataclass(slots=True)
 class SerialTransportCandidate:
@@ -48,6 +54,11 @@ class SerialTransportCandidate:
     baudrate: int
     description: str
     hardware_id: str
+
+    @property
+    def url(self) -> str:
+        """Return the serial URL for this port, i.e. its device path."""
+        return self.transport.url
 
 
 async def enumerate_tcp_transports(
@@ -121,21 +132,19 @@ async def enumerate_serial_transports(
     if baudrate <= 0:
         raise ValueError("baudrate must be positive")
 
-    list_ports = _load_serial_list_ports()
-    loop = asyncio.get_running_loop()
-    ports = await loop.run_in_executor(
-        None,
-        list_ports.comports,
-    )
+    try:
+        ports = await serialx.async_list_serial_ports()
+    except OSError as exc:
+        raise DiscoveryError(f"Unable to enumerate serial ports: {exc}") from exc
 
     candidates: list[SerialTransportCandidate] = []
     for port in ports:
-        device = getattr(port, "device", None) or getattr(port, "name", None)
+        device = port.device
         if not device:
             continue
 
-        description = getattr(port, "description", "") or ""
-        hardware_id = getattr(port, "hwid", "") or ""
+        description = port.product or port.interface_description or ""
+        hardware_id = _format_hardware_id(port)
 
         candidates.append(
             SerialTransportCandidate(
@@ -148,6 +157,18 @@ async def enumerate_serial_transports(
         )
 
     return sorted(candidates, key=lambda candidate: candidate.device)
+
+
+def _format_hardware_id(port: serialx.SerialPortInfo) -> str:
+    """Return a pyserial-style hardware ID such as ``USB VID:PID=0403:6001 SER=X``."""
+
+    if port.vid is None or port.pid is None:
+        return ""
+
+    hardware_id = f"USB VID:PID={port.vid:04X}:{port.pid:04X}"
+    if port.serial_number:
+        hardware_id += f" SER={port.serial_number}"
+    return hardware_id
 
 
 def _safe_decode(payload: bytes) -> str:
@@ -229,16 +250,3 @@ async def _bind_datagram_listener(
     protocol = _DiscoveryDatagramProtocol()
     transport, _ = await loop.create_datagram_endpoint(lambda: protocol, sock=sock)
     return transport, protocol
-
-
-def _load_serial_list_ports() -> Any:  # pragma: no cover - thin wrapper
-    """Return serial.tools.list_ports for environments with pyserial installed."""
-
-    try:
-        from serial.tools import list_ports
-    except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional dep
-        raise DiscoveryError(
-            "pyserial is required to enumerate serial ports; install with 'pip install pyserial'"
-        ) from exc
-
-    return list_ports
