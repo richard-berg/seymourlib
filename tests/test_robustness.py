@@ -19,6 +19,7 @@ from seymourlib.exceptions import (
     SeymourClientClosedError,
     SeymourConnectionError,
     SeymourError,
+    SeymourTimeoutError,
     SeymourTransportError,
 )
 from seymourlib.transport import URLTransport
@@ -327,4 +328,42 @@ class TestUnexpectedErrors:
         # The next request starts over on a new connection
         assert (await client.get_status()).ratio is not None
         assert ip2sl.connections == 2
+        await client.close()
+
+
+class TestTimeoutsAreDistinct:
+    async def test_silent_controller_raises_timeout_error(self, ip2sl: FakeIP2SL) -> None:
+        async def silent(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            return
+
+        ip2sl.behavior = silent
+        client = make_client(ip2sl, request_timeout=0.1)
+        with pytest.raises(SeymourTimeoutError):
+            await client.get_status()
+        await client.close()
+
+    async def test_refused_connection_is_not_a_timeout(self) -> None:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        client = SeymourClient(URLTransport(f"socket://127.0.0.1:{port}"), request_timeout=0.1)
+        with pytest.raises(SeymourConnectionError) as exc_info:
+            await client.get_status()
+        assert not isinstance(exc_info.value, SeymourTimeoutError)
+        await client.close()
+
+    async def test_connect_timeout_is_not_a_timeout(
+        self, ip2sl: FakeIP2SL, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = make_client(ip2sl, request_timeout=0.1)
+
+        async def hang() -> None:
+            raise TimeoutError
+
+        monkeypatch.setattr(client.transport, "connect", hang)
+        with pytest.raises(SeymourConnectionError) as exc_info:
+            await client.get_status()
+        assert not isinstance(exc_info.value, SeymourTimeoutError)
         await client.close()

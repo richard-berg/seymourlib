@@ -21,6 +21,7 @@ from .exceptions import (
     SeymourClientClosedError,
     SeymourConnectionError,
     SeymourProtocolError,
+    SeymourTimeoutError,
     SeymourTransportError,
 )
 from .transport import SeymourTransport
@@ -264,7 +265,11 @@ class SeymourClient:
     ) -> bytes | None:
         """Send a frame once, connecting first if needed; the caller holds the lock."""
         if not self._connected:
-            await self.transport.connect()
+            try:
+                await self.transport.connect()
+            except (TimeoutError, OSError) as exc:
+                # Keep a connect timeout apart from a controller that doesn't answer
+                raise SeymourTransportError(f"Failed to connect: {exc!r}") from exc
             self._connected = True
             self._mark_success()
 
@@ -323,6 +328,9 @@ class SeymourClient:
             # Protocol errors (malformed response) do NOT indicate a
             # broken connection and should not trigger reconnection.
             self._connected = False
+            cause = exc.last_attempt.exception() if isinstance(exc, RetryError) else exc
+            if isinstance(cause, TimeoutError):
+                raise SeymourTimeoutError("No response from the controller") from exc
             raise SeymourConnectionError("Transport operation failed after retries") from exc
         except SeymourClientClosedError:
             raise
