@@ -431,5 +431,31 @@ async def diagnostics(option: DiagnosticOption) -> None:
         rprint(diag)
 
 
+ip2sl_app = AsyncTyper(help="Commands for the Global Caché IP2SL bridge (uses --host).")
+app.add_typer(ip2sl_app, name="ip2sl")
+
+
+@ip2sl_app.async_command("serial")  # type: ignore
+async def ip2sl_serial(
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Set the settings the Seymour controller needs.")
+    ] = False,
+) -> None:
+    """Show, and optionally fix, the IP2SL's serial port settings."""
+    from . import itach
+
+    assert _GLOBAL_OPTIONS is not None
+    settings = await itach.get_serial_settings(_GLOBAL_OPTIONS.host)
+    rprint(f"[bold yellow]serial settings[/bold yellow]: {settings}")
+    if settings.suits_seymour:
+        rprint("[green]Suitable for a Seymour controller[/green]")
+        return
+    if not fix:
+        typer.secho("Not suitable for a Seymour controller; rerun with --fix", fg="red")
+        raise typer.Exit(code=1)
+    settings = await itach.set_serial_settings(_GLOBAL_OPTIONS.host)
+    rprint(f"[green]Changed to[/green]: {settings}")
+
+
 def main() -> None:
     app()
