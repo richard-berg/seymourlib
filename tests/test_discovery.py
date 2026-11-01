@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 import serialx
@@ -15,7 +17,7 @@ from seymourlib.discovery import (
     enumerate_serial_transports,
     enumerate_tcp_transports,
 )
-from seymourlib.transport import ITACH_SERIAL_PORT, SEYMOUR_BAUD_RATE
+from seymourlib.transport import ITACH_SERIAL_PORT, SEYMOUR_BAUD_RATE, TCPTransport
 
 
 def test_parse_amxb_payload_parses_expected_fields() -> None:
@@ -165,3 +167,47 @@ async def test_enumerate_serial_transports_os_error(
 async def test_enumerate_serial_transports_rejects_bad_baudrate() -> None:
     with pytest.raises(ValueError):
         await enumerate_serial_transports(0)
+
+
+def test_multicast_socket_is_closed_when_joining_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[socket.socket] = []
+
+    class FailingSocket(socket.socket):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+        def setsockopt(self, level: int, option: int, value: Any, *args: Any) -> None:
+            if option == socket.IP_ADD_MEMBERSHIP:
+                raise OSError("No such device")
+            super().setsockopt(level, option, value)
+
+    monkeypatch.setattr(socket, "socket", FailingSocket)
+    monkeypatch.setattr(discovery, "MCAST_PORT", 0)
+    with pytest.raises(OSError, match="No such device"):
+        discovery._create_multicast_socket(None)
+    assert created
+    assert created[0].fileno() == -1
+
+
+@pytest.mark.parametrize(
+    ("model", "expected"),
+    [
+        ("iTachIP2SL", True),
+        ("iTachWF2SL", True),
+        ("GC-100-12", True),
+        ("iTachFlexEthernet", True),
+        ("iTachIP2IR", False),
+        ("iTachIP2CC", False),
+        (None, None),
+    ],
+)
+def test_has_serial_port(model: str | None, expected: bool | None) -> None:
+    candidate = discovery.TCPTransportCandidate(
+        transport=TCPTransport("192.0.2.1"),
+        host="192.0.2.1",
+        port=4999,
+        metadata={"Model": model} if model else {},
+        raw_beacon="",
+    )
+    assert candidate.has_serial_port is expected

@@ -15,6 +15,9 @@ MCAST_GROUP = "239.255.250.250"
 MCAST_PORT = 9131
 MAX_MESSAGE_SIZE = 2048
 DEFAULT_DISCOVERY_INTERVAL = 12.0  # in practice, beacons arrive every 10 seconds
+# Beacon models with a serial port: iTach IP2SL/WF2SL, GC-100, and iTach Flex
+# (with a serial cable).
+SERIAL_MODEL_MARKERS = ("SL", "GC-100", "Flex")
 
 __all__ = [
     "DiscoveryError",
@@ -43,6 +46,17 @@ class TCPTransportCandidate:
     def url(self) -> str:
         """Return the serial URL for this bridge, e.g. ``socket://host:4999``."""
         return self.transport.url
+
+    @property
+    def has_serial_port(self) -> bool | None:
+        """Return whether the model has a serial port, or None if the beacon doesn't say.
+
+        Global Caché also announces IR and contact-closure units, such as the
+        iTach IP2IR, which can't reach a Seymour controller.
+        """
+        if not (model := self.metadata.get("Model")):
+            return None
+        return any(marker in model for marker in SERIAL_MODEL_MARKERS)
 
 
 @dataclass(slots=True)
@@ -206,16 +220,22 @@ def _create_multicast_socket(interface_ip: str | None) -> socket.socket:
     """Create and configure a multicast socket for Global Caché beacons."""
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", MCAST_PORT))
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("", MCAST_PORT))
 
-    if interface_ip:
-        interface_bytes = socket.inet_aton(interface_ip)
-    else:
-        interface_bytes = socket.inet_aton("0.0.0.0")
+        if interface_ip:
+            interface_bytes = socket.inet_aton(interface_ip)
+        else:
+            interface_bytes = socket.inet_aton("0.0.0.0")
 
-    mreq = struct.pack("=4s4s", socket.inet_aton(MCAST_GROUP), interface_bytes)
-    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        mreq = struct.pack("=4s4s", socket.inet_aton(MCAST_GROUP), interface_bytes)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+    except BaseException:
+        # Without multicast routing (e.g. in some containers) joining fails;
+        # don't leak the socket every time discovery is retried.
+        sock.close()
+        raise
     return sock
 
 
