@@ -205,7 +205,10 @@ class SeymourClient:
                     # have any unsolicited frames or notifications.
                     drained = await self.transport.drain_read_buffer()
                     if drained:
-                        _LOGGER.warning(
+                        # Whitespace is a line terminator after the previous
+                        # frame, not a sign of a desynchronised stream.
+                        _LOGGER.log(
+                            logging.WARNING if drained.strip() else logging.DEBUG,
                             "Drained %d stale bytes from buffer before send: %r",
                             len(drained),
                             drained[:80],

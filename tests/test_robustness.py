@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
 import pytest
@@ -98,3 +99,41 @@ class TestReceiveResyncs:
         assert status.ratio is not None
         assert status.ratio.id == "178"
         await client.close()
+
+
+class TestFrameTerminators:
+    async def test_trailing_whitespace_is_not_a_warning(
+        self, ip2sl: FakeIP2SL, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def crlf(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.write(srv.responses[frame] + b"\r\n")
+
+        caplog.set_level(logging.DEBUG, logger="seymourlib")
+        ip2sl.behavior = crlf
+        client = make_client(ip2sl)
+        for _ in range(3):
+            await client.get_status()
+            await asyncio.sleep(0.02)
+        await client.close()
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert "Drained 2 stale bytes" in caplog.text
+
+    async def test_stale_frame_is_a_warning(
+        self, ip2sl: FakeIP2SL, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def double(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            writer.write(srv.responses[frame] * 2)
+
+        ip2sl.behavior = double
+        client = make_client(ip2sl)
+        await client.get_status()
+        await asyncio.sleep(0.02)
+        await client.get_status()
+        await client.close()
+        assert any(
+            r.levelno == logging.WARNING and "Drained" in r.getMessage() for r in caplog.records
+        )
