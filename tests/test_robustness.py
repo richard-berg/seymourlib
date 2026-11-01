@@ -8,6 +8,7 @@ import asyncio
 import logging
 import socket
 import time
+from types import SimpleNamespace
 
 import pytest
 from conftest import FakeIP2SL, answer, reset
@@ -367,3 +368,95 @@ class TestTimeoutsAreDistinct:
             await client.get_status()
         assert not isinstance(exc_info.value, SeymourTimeoutError)
         await client.close()
+
+
+class TestSilentController:
+    async def test_connection_is_kept_until_silence_persists(
+        self, ip2sl: FakeIP2SL, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        async def silent(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            return
+
+        ip2sl.behavior = silent
+        client = SeymourClient(
+            URLTransport(ip2sl.url, connect_timeout=1),
+            max_retries=1,
+            request_timeout=0.05,
+            reconnect_after_timeouts=3,
+        )
+        for _ in range(3):
+            with pytest.raises(SeymourTimeoutError):
+                await client.get_status()
+        # Three silent requests share one connection; then it is replaced
+        assert ip2sl.connections == 1
+        assert not client.is_connected
+        with pytest.raises(SeymourTimeoutError):
+            await client.get_status()
+        assert ip2sl.connections == 2
+        # Failing requests are reported by the caller, not logged as warnings
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        await client.close()
+
+    async def test_success_resets_the_count(self, ip2sl: FakeIP2SL) -> None:
+        answering = True
+
+        async def flaky(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            if answering:
+                await answer(srv, conn, frame, writer)
+
+        ip2sl.behavior = flaky
+        client = SeymourClient(
+            URLTransport(ip2sl.url, connect_timeout=1),
+            max_retries=1,
+            request_timeout=0.05,
+            reconnect_after_timeouts=2,
+        )
+        for _ in range(3):
+            answering = False
+            with pytest.raises(SeymourTimeoutError):
+                await client.get_status()
+            answering = True
+            await asyncio.sleep(0.06)
+            await client.get_status()
+        assert ip2sl.connections == 1
+        await client.close()
+
+
+@pytest.mark.skipif(not hasattr(socket, "TCP_USER_TIMEOUT"), reason="Linux socket options")
+async def test_tcp_dead_peer_detection_is_enabled(ip2sl: FakeIP2SL) -> None:
+    transport = URLTransport(ip2sl.url, connect_timeout=1)
+    await transport.connect()
+    assert transport.writer is not None
+    sock = transport_module._tcp_socket(transport.writer)
+    assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE) == 1
+    assert (
+        sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE) == transport_module.KEEPALIVE_IDLE
+    )
+    assert (
+        sock.getsockopt(socket.IPPROTO_TCP, socket.TCP_USER_TIMEOUT)
+        == transport_module.TCP_USER_TIMEOUT_MS
+    )
+    await transport.close()
+
+
+def test_dead_peer_detection_is_best_effort(caplog: pytest.LogCaptureFixture) -> None:
+    class RefusingSocket:
+        def setsockopt(self, *args: object) -> None:
+            raise OSError("not supported")
+
+    class Writer:
+        class transport:  # noqa: N801
+            class _tcp_transport:  # noqa: N801
+                @staticmethod
+                def get_extra_info(name: str) -> object:
+                    return RefusingSocket()
+
+    caplog.set_level(logging.DEBUG, logger="seymourlib")
+    transport_module._detect_dead_peers(Writer())  # type: ignore[arg-type]
+    assert "Couldn't set socket option" in caplog.text
+    # Transports that aren't TCP keep their defaults
+    transport_module._detect_dead_peers(SimpleNamespace(transport=object()))  # type: ignore[arg-type]

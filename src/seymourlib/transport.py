@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from abc import abstractmethod
+from typing import Any
 
 import serialx
 
@@ -22,6 +24,13 @@ SEYMOUR_BAUD_RATE = 115200
 ITACH_SERIAL_PORT = 4999
 DEFAULT_CONNECT_TIMEOUT = 10.0
 CLOSE_TIMEOUT = 2.0
+# A TCP connection whose peer vanished is noticed within about 25 s while
+# idle (keepalive) and 20 s while data is unacknowledged (user timeout),
+# instead of the many minutes of the kernel defaults.
+KEEPALIVE_IDLE = 10
+KEEPALIVE_INTERVAL = 5
+KEEPALIVE_COUNT = 3
+TCP_USER_TIMEOUT_MS = 20_000
 
 
 def tcp_url(host: str, port: int = ITACH_SERIAL_PORT) -> str:
@@ -179,6 +188,41 @@ class URLTransport(SeymourTransport):
             self.reader, self.writer = await serialx.open_serial_connection(
                 url=self.url, baudrate=self.baudrate
             )
+        _detect_dead_peers(self.writer)
+
+
+def _tcp_socket(writer: asyncio.StreamWriter) -> Any:
+    """Return the TCP socket under a serialx ``socket://`` writer, if any."""
+    # serialx wraps the asyncio TCP transport without exposing it
+    tcp_transport = getattr(writer.transport, "_tcp_transport", None)
+    if tcp_transport is None:
+        return None
+    return tcp_transport.get_extra_info("socket")
+
+
+def _detect_dead_peers(writer: asyncio.StreamWriter) -> None:
+    """Make the kernel notice a TCP peer that vanished, e.g. a rebooted IP2SL.
+
+    Without this, a connection to a bridge that lost power or network looks
+    open for many minutes. Best-effort: other transports, and platforms
+    without these options, keep the defaults.
+    """
+    if (sock := _tcp_socket(writer)) is None:
+        return
+    options = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPIDLE", None), KEEPALIVE_IDLE),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPINTVL", None), KEEPALIVE_INTERVAL),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_KEEPCNT", None), KEEPALIVE_COUNT),
+        (socket.IPPROTO_TCP, getattr(socket, "TCP_USER_TIMEOUT", None), TCP_USER_TIMEOUT_MS),
+    ]
+    for level, option, value in options:
+        if option is None:
+            continue
+        try:
+            sock.setsockopt(level, option, value)
+        except OSError as exc:
+            _LOGGER.debug("Couldn't set socket option %s: %r", option, exc)
 
 
 class TCPTransport(URLTransport):

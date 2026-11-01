@@ -297,7 +297,8 @@ class TestClientReleasesSocket:
             await client.connect()
             with pytest.raises(SeymourConnectionError):
                 await client.get_status()
-            assert not client.is_connected
+            # A single silent request keeps the connection for the next one
+            assert client.is_connected
 
             await client.close()
 

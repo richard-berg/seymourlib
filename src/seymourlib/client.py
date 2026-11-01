@@ -30,6 +30,11 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_REQUEST_TIMEOUT = 10.0
+# Requests that time out in a row before the connection is replaced.  A
+# controller that is off times out on every request, and reconnecting each
+# time only churns the bridge's TCP stack; a dead TCP connection is noticed by
+# the transport's keepalive instead.
+DEFAULT_RECONNECT_AFTER_TIMEOUTS = 3
 HEALTH_CHECK_INTERVAL = 90.0
 HEALTH_CHECK_TIMEOUT = 3.0
 # Silence that ends a diagnostics response, which has no reliable frame end.
@@ -42,6 +47,7 @@ class SeymourClient:
         transport: SeymourTransport,
         max_retries: int = DEFAULT_MAX_RETRIES,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+        reconnect_after_timeouts: int = DEFAULT_RECONNECT_AFTER_TIMEOUTS,
     ):
         self.transport = transport
         self._lock = asyncio.Lock()
@@ -49,6 +55,8 @@ class SeymourClient:
         self._closed = False
         self.max_retries = max_retries
         self.request_timeout = request_timeout
+        self.reconnect_after_timeouts = reconnect_after_timeouts
+        self._timed_out_requests = 0
         # Wall clock time for display, monotonic time for intervals
         self._last_successful_operation = 0.0
         self._last_success_monotonic: float | None = None
@@ -60,8 +68,8 @@ class SeymourClient:
             stop=stop_after_attempt(self.max_retries),
             wait=wait_exponential(multiplier=1, min=1, max=30),
             retry=retry_if_exception_type((SeymourTransportError, ConnectionError, OSError)),
-            before_sleep=before_sleep_log(_LOGGER, logging.WARNING),
-            after=after_log(_LOGGER, logging.INFO),
+            before_sleep=before_sleep_log(_LOGGER, logging.DEBUG),
+            after=after_log(_LOGGER, logging.DEBUG),
         )
 
         async for attempt in retryer:
@@ -172,6 +180,7 @@ class SeymourClient:
         protocol.decode_status(raw)
 
     def _mark_success(self) -> None:
+        self._timed_out_requests = 0
         self._last_successful_operation = time.time()
         self._last_success_monotonic = time.monotonic()
 
@@ -227,7 +236,8 @@ class SeymourClient:
             retry=retry_if_exception_type(
                 (SeymourTransportError, TimeoutError, ConnectionError, OSError)
             ),
-            before_sleep=before_sleep_log(_LOGGER, logging.WARNING),
+            # Retries are routine; callers report requests that finally fail
+            before_sleep=before_sleep_log(_LOGGER, logging.DEBUG),
         )
 
         async for attempt in retryer:
@@ -327,10 +337,16 @@ class SeymourClient:
             # Only mark disconnected for transport-level failures.
             # Protocol errors (malformed response) do NOT indicate a
             # broken connection and should not trigger reconnection.
-            self._connected = False
             cause = exc.last_attempt.exception() if isinstance(exc, RetryError) else exc
             if isinstance(cause, TimeoutError):
+                # The connection itself may be fine, so only replace it when
+                # the silence persists.
+                self._timed_out_requests += 1
+                if self._timed_out_requests >= self.reconnect_after_timeouts:
+                    self._timed_out_requests = 0
+                    self._connected = False
                 raise SeymourTimeoutError("No response from the controller") from exc
+            self._connected = False
             raise SeymourConnectionError("Transport operation failed after retries") from exc
         except SeymourClientClosedError:
             raise
