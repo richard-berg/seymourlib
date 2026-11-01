@@ -155,6 +155,17 @@ seymourctl discover serial
 
 Use `discover tcp` when you need to confirm IP2SL devices are visible on the LAN; the table output includes the advertised model, status, and UUID from the Global Caché beacons. `discover serial` lists local USB/RS232 adapters with hardware IDs so you can select the right port before launching the client.
 
+### Reliability for long-running applications
+
+`SeymourClient` is built to run for months inside an application such as Home Assistant:
+
+- **One request at a time.** RS-232 is half-duplex, so requests are serialized; the lock is held for one attempt, never while waiting to retry.
+- **Commands are confirmed.** The controller doesn't answer commands, so each one is followed by a status request on the same connection; a command sent into a dead connection fails instead of silently disappearing. Pass `confirm_commands=False` to skip the extra round trip.
+- **Relative moves are never repeated.** Jog and 1 % moves are only retried when they can't have reached the controller.
+- **Failures are typed.** `SeymourTimeoutError` means the bridge accepted the connection but the controller didn't answer (controller off, wrong bridge serial settings, or the bridge still holding an old connection); other `SeymourConnectionError`s mean the bridge itself is unreachable. Malformed responses always raise `SeymourProtocolError`.
+- **Connections are recycled sparingly.** A broken connection is replaced on the next attempt; a silent controller keeps the connection until `reconnect_after_timeouts` requests in a row time out. TCP keepalive and `TCP_USER_TIMEOUT` notice a bridge that vanished.
+- **`close()` is final, `disconnect()` isn't.** After `close()`, requests in flight stop instead of reconnecting, so a stray connection can't hold the IP2SL's only slot. Use `disconnect()` to recycle a connection and keep using the client.
+
 ---
 
 ## IP2SL Setup & Diagnostics
@@ -185,6 +196,7 @@ Use `discover tcp` when you need to confirm IP2SL devices are visible on the LAN
 - Open the IP2SL web UI and switch to the **Serial** tab, or telnet/iTest into port **4998** for command-line configuration.
 - Ensure the port is set to **115200 baud, 8 data bits, no parity, 1 stop bit** to match Seymour’s RS232 spec.
 - Saving via the UI writes immediately; if you used the control port, run `set baud 115200`, `set data 8`, `set parity 0`, `set stop 1`, then `save` and reboot so the bridge always boots with the correct framing.
+- Or let seymourlib check and fix them: `seymourctl --host <ip> ip2sl serial --fix` (in Python, `seymourlib.itach.get_serial_settings()` / `set_serial_settings()`). A factory reset puts the bridge back at 9600 baud, which looks like a controller that never answers.
 
 ### 5. Exercise the serial bridge with iTest
 
