@@ -4,7 +4,7 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import pytest
 
@@ -20,6 +20,8 @@ from seymourlib.exceptions import (
     SeymourTransportError,
 )
 from seymourlib.transport import SeymourTransport
+
+STATUS_FRAME = protocol.encode_status()
 
 
 class MockTransport(SeymourTransport):
@@ -386,6 +388,21 @@ class TestSeymourClientOperations:
         result = await client._execute_operation(b"[test_frame]", receive=False)
 
         assert result is None
+        # The command is confirmed with a status request on the same connection
+        assert transport.send_mock.call_args_list == [
+            call(b"[test_frame]"),
+            call(protocol.encode_status()),
+        ]
+        transport.receive_mock.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_execute_operation_send_only_unconfirmed(self, transport: MockTransport) -> None:
+        """Confirmation can be turned off."""
+        client = SeymourClient(transport, confirm_commands=False)
+        await client.connect()
+        result = await client._execute_operation(b"[test_frame]", receive=False)
+
+        assert result is None
         transport.send_mock.assert_called_once_with(b"[test_frame]")
         transport.receive_mock.assert_not_called()
 
@@ -620,7 +637,7 @@ class TestSeymourClientPublicAPI:
             await client.move_out(protocol.MotorID.TOP, protocol.MovementCode.JOG)
 
             mock_encode.assert_called_once_with(protocol.MotorID.TOP, protocol.MovementCode.JOG)
-            transport.send_mock.assert_called_once_with(b"[OT]")
+            assert transport.send_mock.call_args_list == [call(b"[OT]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_move_in(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -632,7 +649,7 @@ class TestSeymourClientPublicAPI:
             await client.move_in(protocol.MotorID.BOTTOM, protocol.MovementCode.MOVE)
 
             mock_encode.assert_called_once_with(protocol.MotorID.BOTTOM, protocol.MovementCode.MOVE)
-            transport.send_mock.assert_called_once_with(b"[IB]")
+            assert transport.send_mock.call_args_list == [call(b"[IB]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_move_to_ratio(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -645,7 +662,7 @@ class TestSeymourClientPublicAPI:
             await client.move_to_ratio(ratio)
 
             mock_encode.assert_called_once_with(ratio)
-            transport.send_mock.assert_called_once_with(b"[M123]")
+            assert transport.send_mock.call_args_list == [call(b"[M123]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_home(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -657,7 +674,7 @@ class TestSeymourClientPublicAPI:
             await client.home(protocol.MotorID.LEFT)
 
             mock_encode.assert_called_once_with(protocol.MotorID.LEFT)
-            transport.send_mock.assert_called_once_with(b"[AL]")
+            assert transport.send_mock.call_args_list == [call(b"[AL]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_halt(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -669,7 +686,7 @@ class TestSeymourClientPublicAPI:
             await client.halt(protocol.MotorID.RIGHT)
 
             mock_encode.assert_called_once_with(protocol.MotorID.RIGHT)
-            transport.send_mock.assert_called_once_with(b"[HR]")
+            assert transport.send_mock.call_args_list == [call(b"[HR]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_calibrate(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -681,7 +698,7 @@ class TestSeymourClientPublicAPI:
             await client.calibrate(protocol.MotorID.VERTICAL)
 
             mock_encode.assert_called_once_with(protocol.MotorID.VERTICAL)
-            transport.send_mock.assert_called_once_with(b"[CV]")
+            assert transport.send_mock.call_args_list == [call(b"[CV]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_update_ratio(self, client: SeymourClient, transport: MockTransport) -> None:
@@ -694,7 +711,7 @@ class TestSeymourClientPublicAPI:
             await client.update_ratio(ratio)
 
             mock_encode.assert_called_once_with(ratio)
-            transport.send_mock.assert_called_once_with(b"[U456]")
+            assert transport.send_mock.call_args_list == [call(b"[U456]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_reset_factory_default_with_ratio(
@@ -709,7 +726,7 @@ class TestSeymourClientPublicAPI:
             await client.reset_factory_default(ratio)
 
             mock_encode.assert_called_once_with(ratio)
-            transport.send_mock.assert_called_once_with(b"[X789]")
+            assert transport.send_mock.call_args_list == [call(b"[X789]"), call(STATUS_FRAME)]
 
     @pytest.mark.asyncio
     async def test_reset_factory_default_no_ratio(
@@ -723,7 +740,7 @@ class TestSeymourClientPublicAPI:
             await client.reset_factory_default(None)
 
             mock_encode.assert_called_once_with(None)
-            transport.send_mock.assert_called_once_with(b"[X]")
+            assert transport.send_mock.call_args_list == [call(b"[X]"), call(STATUS_FRAME)]
 
 
 class TestSeymourClientHealthCheckIntegration:

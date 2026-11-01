@@ -197,10 +197,10 @@ class TestConcurrentOperationOrdering:
         sends = [e for e in transport.log if e[0] == "send"]
         recvs = [e for e in transport.log if e[0] == "recv"]
 
-        # 3 sends total: 2 status queries + 1 move_out
-        assert len(sends) == 3
-        # 2 receives: only the status queries read back
-        assert len(recvs) == 2
+        # 4 sends total: 2 status queries + 1 move_out and its confirmation
+        assert len(sends) == 4
+        # 3 receives: the status queries and the confirmation read back
+        assert len(recvs) == 3
 
         # The log should never have two recvs in a row
         for i in range(len(transport.log) - 1):

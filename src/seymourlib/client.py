@@ -56,6 +56,7 @@ class SeymourClient:
         max_retries: int = DEFAULT_MAX_RETRIES,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
         reconnect_after_timeouts: int = DEFAULT_RECONNECT_AFTER_TIMEOUTS,
+        confirm_commands: bool = True,
     ):
         self.transport = transport
         self._lock = asyncio.Lock()
@@ -64,6 +65,7 @@ class SeymourClient:
         self.max_retries = max_retries
         self.request_timeout = request_timeout
         self.reconnect_after_timeouts = reconnect_after_timeouts
+        self.confirm_commands = confirm_commands
         self._timed_out_requests = 0
         # Wall clock time for display, monotonic time for intervals
         self._last_successful_operation = 0.0
@@ -328,6 +330,12 @@ class SeymourClient:
             mark_sent()
             await self.transport.send(frame)
             if not receive:
+                if self.confirm_commands:
+                    # Commands get no reply, and a write to a dead connection
+                    # still succeeds locally; any answer to a status request
+                    # on the same connection proves the command was delivered.
+                    await self.transport.send(protocol.encode_status())
+                    await self.transport.receive()
                 self._mark_success()
                 return None
             response = await (

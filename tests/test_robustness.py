@@ -514,3 +514,35 @@ class TestRelativeMovesAreNotRepeated:
         await asyncio.sleep(0.05)
         assert ip2sl.count(b"[01ITJ]") == 1
         await client.close()
+
+
+class TestCommandsAreConfirmed:
+    async def test_command_to_a_silent_peer_fails(self, ip2sl: FakeIP2SL) -> None:
+        async def silent(
+            srv: FakeIP2SL, conn: int, frame: bytes, writer: asyncio.StreamWriter
+        ) -> None:
+            return
+
+        ip2sl.behavior = silent
+        client = make_client(ip2sl, request_timeout=0.1)
+        with pytest.raises(SeymourTimeoutError):
+            await client.halt(protocol.MotorID.ALL)
+        await client.close()
+
+    async def test_command_is_followed_by_a_status_request(self, ip2sl: FakeIP2SL) -> None:
+        client = make_client(ip2sl)
+        await client.halt(protocol.MotorID.ALL)
+        await client.close()
+        assert ip2sl.frames == [b"[01HA]", b"[01S]"]
+
+    async def test_command_reaches_a_restarted_bridge(self, ip2sl: FakeIP2SL) -> None:
+        """A bridge that restarted resets the old connection; the command is resent."""
+        client = make_client(ip2sl)
+        await client.get_status()
+        for writer in ip2sl.writers:
+            reset(writer)
+        await asyncio.sleep(0.05)
+        await client.home(protocol.MotorID.ALL)
+        await client.close()
+        assert ip2sl.count(b"[01AA]") == 1
+        assert ip2sl.connections == 2
